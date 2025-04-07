@@ -50,10 +50,12 @@ sudo dnf5 install -y timeshift
 # -------------------------
 sudo dnf install -y gnome-tweaks gnome-extensions-app gnome-calendar gnome-usage
 
-# GNOME appearance settings
-gsettings set org.gnome.desktop.interface font-name 'Noto Sans 11'
-gsettings set org.gnome.desktop.interface document-font-name 'Noto Serif 11'
-gsettings set org.gnome.desktop.interface monospace-font-name 'Noto Mono 11'
+# Install the Ubuntu Font Family
+sudo dnf copr enable atim/ubuntu-fonts
+sudo dnf install ubuntu-family-fonts
+#gsettings set org.gnome.desktop.interface font-name 'Ubuntu'
+#gsettings set org.gnome.desktop.interface document-font-name 'Ubuntu'
+#gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu'
 
 # GTK4 file chooser tweak
 gsettings set org.gtk.gtk4.Settings.FileChooser sort-directories-first true
