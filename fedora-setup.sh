@@ -57,6 +57,9 @@ sudo dnf install ubuntu-family-fonts
 #gsettings set org.gnome.desktop.interface document-font-name 'Ubuntu'
 #gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu'
 
+# Install Better Developer Fonts
+sudo dnf install fira-code-fonts dejavu-sans-mono-fonts jetbrains-mono-fonts
+
 # GTK4 file chooser tweak
 gsettings set org.gtk.gtk4.Settings.FileChooser sort-directories-first true
 
