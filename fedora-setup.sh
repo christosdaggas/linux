@@ -50,7 +50,8 @@ sudo dnf5 install -y timeshift
 # -------------------------
 sudo dnf install -y gnome-tweaks gnome-extensions-app gnome-calendar gnome-usage
 
-# Install the Ubuntu Font Family
+# Install better Font Familys
+sudo dnf install rsms-inter-fonts
 sudo dnf copr enable atim/ubuntu-fonts
 sudo dnf install ubuntu-family-fonts
 #gsettings set org.gnome.desktop.interface font-name 'Ubuntu'
