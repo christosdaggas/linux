@@ -9,7 +9,7 @@ This script automates the initial setup and configuration of Fedora 41, simplify
 Clone or download the script, then execute:
 
 ```bash
-cd ~/Documents
+cd ~/Downloads
 chmod +x fedora-setup.sh
 ./fedora-setup.sh | tee fedora-install-log.txt
 ```
