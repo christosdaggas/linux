@@ -2,7 +2,7 @@
 set -x
 
 # -------------------------------------------------
-# Fedora 41 Setup Script
+# Fedora Setup Script
 # -------------------------------------------------
 
 #
@@ -46,10 +46,11 @@ sudo fwupdmgr update
 # -------------------------
 # System Utilities
 # -------------------------
-sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig snapd dnf5 dnf5-plugins
+sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins
 
 # Enable snap support
-sudo ln -s /var/lib/snapd/snap /snap
+# sudo dnf install -y snapd
+# sudo ln -s /var/lib/snapd/snap /snap
 
 # -------------------------
 # Optional: Install Cockpit Web Console
@@ -58,20 +59,16 @@ read -p "Do you want to install Cockpit (web-based system manager)? [y/N]: " INS
 
 if [[ "$INSTALL_COCKPIT" =~ ^[Yy]$ ]]; then
   echo "Installing Cockpit..."
-
   sudo bash <<'EOF'
   dnf install -y cockpit
   systemctl enable --now cockpit.socket
-
   # Check if firewalld is active and allow Cockpit through it
   if systemctl is-active --quiet firewalld; then
     firewall-cmd --add-service=cockpit --permanent
     firewall-cmd --reload
   fi
-
   echo "Cockpit installation complete. You can access it at https://localhost:9090"
 EOF
-
 else
   echo "Skipping Cockpit installation."
 fi
@@ -81,9 +78,8 @@ fi
 # GNOME Tweaks & Behavior
 # -------------------------
 sudo dnf install -y gnome-tweaks gnome-extensions-app gnome-calendar gnome-usage
-# GTK4 file chooser tweak
+# GTK4 file chooser tweak and behavior tweaks
 gsettings set org.gtk.gtk4.Settings.FileChooser sort-directories-first true
-# GNOME behavior tweaks
 gsettings set org.gnome.desktop.wm.preferences button-layout ":minimize,maximize,close"
 gsettings set org.gnome.desktop.wm.keybindings switch-windows "['<Alt>Tab']"
 gsettings set org.gnome.desktop.wm.keybindings switch-applications "['<Super>Tab']"
@@ -100,10 +96,10 @@ sudo dnf install -y thunderbird filezilla flatseal decibels dconf-editor meld
 # -------------------------
 # Optional: LibreOffice Suite (with Greek language support)
 # -------------------------
-read -p "Do you want to install LibreOffice with Greek language support? [y/N]: " INSTALL_LIBREOFFICE
+read -p "Do you want to install LibreOffice with English and Greek language support? [y/N]: " INSTALL_LIBREOFFICE
 if [[ "$INSTALL_LIBREOFFICE" =~ ^[Yy]$ ]]; then
   echo "Installing LibreOffice and Greek language pack..."
-  sudo dnf install -y libreoffice libreoffice-langpack-el
+  sudo dnf install -y libreoffice libreoffice-langpack-el libreoffice-langpack-en
 else
   echo "Skipping LibreOffice installation."
 fi
@@ -133,7 +129,7 @@ flatpak install -y flathub org.nickvision.money
 flatpak install -y flathub org.signal.Signal
 
 # -------------------------
-# Optional: AI Tools - Ollama (installs Alpaca automatically)
+# Optional: AI Tools - Ollama (installs Alpaca GUI automatically)
 # -------------------------
 read -p "Do you want to install Ollama (Alpaca GUI will be installed automatically)? [y/N]: " INSTALL_OLLAMA_CHOICE
 if [[ "$INSTALL_OLLAMA_CHOICE" =~ ^[Yy]$ ]]; then
@@ -219,3 +215,11 @@ cat <<EOL > ~/.config/fontconfig/fonts.conf
 EOL
 
 echo "✅ Fedora 41 setup completed. Reboot recommended."
+read -rp "Do you want to reboot now? [y/N]: " RESPONSE
+if [[ "$RESPONSE" =~ ^[Yy]$ ]]; then
+    echo "Rebooting..."
+    sleep 2
+    reboot
+else
+    echo "Reboot skipped."
+fi
