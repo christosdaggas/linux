@@ -50,7 +50,11 @@ chmod +x fedora-setup.sh
 
 ### 📅 Productivity Suite
 - Applications installed include Thunderbird, FileZilla, Flatseal, and additional Flatpak apps:
-  - Azure Storage Explorer, GNOME Secrets, Amberol, PikaBackup, Blanket, Iconic, and more.
+- GNOME Secrets, Amberol, PikaBackup, Blanket, Iconic, and more.
+ 
+## 🖥️ AI Tools
+- Ollama
+- Alpaca: Local and online AI GUI
 
 ### 🌐 Web & Development Tools
 - Google Chrome web browser.
@@ -77,7 +81,7 @@ chmod +x fedora-setup.sh
 ---
 
 ## 🖥️ Tested Environment
-- Fedora Workstation 41
+- Fedora Workstation 41 & 42
 - GNOME Desktop Environment
 
 ---
