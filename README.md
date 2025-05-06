@@ -67,7 +67,7 @@ chmod +x fedora-setup.sh
 
 ## 📋 Requirements
 
-- Fedora 41 Workstation.
+- Fedora 41 or 42 Workstation.
 - Internet connection.
 
 ---
