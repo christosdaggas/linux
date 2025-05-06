@@ -53,8 +53,8 @@ chmod +x fedora-setup.sh
 - GNOME Secrets, Amberol, PikaBackup, Blanket, Iconic, and more.
  
 ## 🖥️ AI Tools
-- Ollama
-- Alpaca: Local and online AI GUI
+- Ollama: User-friendly and powerful software for running LLMs locally.
+- Alpaca: Local and online AI GUI.
 
 ### 🌐 Web & Development Tools
 - Google Chrome web browser.
