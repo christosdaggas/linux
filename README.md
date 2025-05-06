@@ -51,12 +51,12 @@ chmod +x fedora-setup.sh
 ### 📅 Productivity Suite
 - Applications installed include Thunderbird, FileZilla, Flatseal, and additional Flatpak apps:
 - GNOME Secrets, Amberol, PikaBackup, Blanket, Iconic, and more.
- 
-## 🖥️ AI Tools
+
+### 🖥️ A.I. Tools
 - Ollama: User-friendly and powerful software for running LLMs locally.
 - Alpaca: Local and online AI GUI.
 
-### 🌐 A.I. Tools
+### 🌐 Web abd Development Tools
 - Google Chrome web browser.
 - Visual Studio Code (official Microsoft repository).
 
