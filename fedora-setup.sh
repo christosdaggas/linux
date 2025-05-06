@@ -51,17 +51,38 @@ sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig snapd
 # Enable snap support
 sudo ln -s /var/lib/snapd/snap /snap
 
-# Install Timeshift via DNF5
-sudo dnf5 install -y timeshift
+# -------------------------
+# Optional: Install Cockpit Web Console
+# -------------------------
+read -p "Do you want to install Cockpit (web-based system manager)? [y/N]: " INSTALL_COCKPIT
+
+if [[ "$INSTALL_COCKPIT" =~ ^[Yy]$ ]]; then
+  echo "Installing Cockpit..."
+
+  sudo bash <<'EOF'
+  dnf install -y cockpit
+  systemctl enable --now cockpit.socket
+
+  # Check if firewalld is active and allow Cockpit through it
+  if systemctl is-active --quiet firewalld; then
+    firewall-cmd --add-service=cockpit --permanent
+    firewall-cmd --reload
+  fi
+
+  echo "Cockpit installation complete. You can access it at https://localhost:9090"
+EOF
+
+else
+  echo "Skipping Cockpit installation."
+fi
+
 
 # -------------------------
 # GNOME Tweaks & Behavior
 # -------------------------
 sudo dnf install -y gnome-tweaks gnome-extensions-app gnome-calendar gnome-usage
-
 # GTK4 file chooser tweak
 gsettings set org.gtk.gtk4.Settings.FileChooser sort-directories-first true
-
 # GNOME behavior tweaks
 gsettings set org.gnome.desktop.wm.preferences button-layout ":minimize,maximize,close"
 gsettings set org.gnome.desktop.wm.keybindings switch-windows "['<Alt>Tab']"
@@ -74,17 +95,73 @@ gsettings set org.gnome.desktop.wm.preferences resize-with-right-button true
 # -------------------------
 # Productivity Applications
 # -------------------------
-sudo dnf install -y thunderbird filezilla flatseal #vlc gimp inkscape krita
+sudo dnf install -y thunderbird filezilla flatseal
 
 # -------------------------
-# Media Applications
+# Optional: LibreOffice Suite (with Greek language support)
 # -------------------------
-# sudo dnf install -y vlc gimp inkscape krita
+read -p "Do you want to install LibreOffice with Greek language support? [y/N]: " INSTALL_LIBREOFFICE
+if [[ "$INSTALL_LIBREOFFICE" =~ ^[Yy]$ ]]; then
+  echo "Installing LibreOffice and Greek language pack..."
+  sudo dnf install -y libreoffice libreoffice-langpack-el
+else
+  echo "Skipping LibreOffice installation."
+fi
 
-flatpak install -y flathub com.microsoft.AzureStorageExplorer
+# -------------------------
+# Optional: Media Applications
+# -------------------------
+read -p "Do you want to install media applications (VLC, GIMP, Inkscape, Krita)? [y/N]: " INSTALL_MEDIA_APPS
+if [[ "$INSTALL_MEDIA_APPS" =~ ^[Yy]$ ]]; then
+  sudo dnf install -y vlc gimp inkscape krita
+else
+  echo "Skipping media applications installation."
+fi
+
+# -------------------------
+# Optional: Applications
+# -------------------------
 flatpak install -y flathub org.gnome.World.PikaBackup
 flatpak install -y flathub com.rafaelmardojai.Blanket
 flatpak install -y flathub com.github.diegoinacio.Iconic
+flatpak install -y flathub io.gitlab.news_flash.NewsFlash
+flatpak install -y flathub org.signal.Signal
+
+# -------------------------
+# Optional: AI Tools - Ollama and Alpaca
+# -------------------------
+echo "Select AI tools to install:"
+echo "1) Ollama (LLM backend)"
+echo "2) Alpaca (Flatpak GUI)"
+echo "3) Both"
+echo "4) None"
+read -p "Enter your choice (e.g., 1 2): " AI_SELECTION
+
+# Convert input into an array
+read -a AI_ARRAY <<< "$AI_SELECTION"
+
+INSTALL_OLLAMA=false
+INSTALL_ALPACA=false
+
+for choice in "${AI_ARRAY[@]}"; do
+  case $choice in
+    1) INSTALL_OLLAMA=true ;;
+    2) INSTALL_ALPACA=true ;;
+    3) INSTALL_OLLAMA=true; INSTALL_ALPACA=true; break ;;
+    4) echo "Skipping AI tools installation."; break ;;
+    *) echo "Invalid choice: $choice" ;;
+  esac
+done
+
+if $INSTALL_OLLAMA; then
+  echo "Installing Ollama..."
+  curl -fsSL https://ollama.com/install.sh | sh
+fi
+
+if $INSTALL_ALPACA; then
+  echo "Installing Alpaca (Flatpak)..."
+  flatpak install -y flathub com.jeffser.Alpaca
+fi
 
 # -------------------------
 # Web & Code Tools
