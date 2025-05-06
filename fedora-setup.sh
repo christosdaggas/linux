@@ -122,6 +122,7 @@ fi
 # Optional: Applications
 # -------------------------
 flatpak install -y flathub com.mattjakeman.ExtensionManager
+flatpak install -y flathub io.github.realmazharhussain.GdmSettings
 flatpak install -y flathub work.openpaper.Paperwork
 flatpak install -y flathub org.gnome.World.PikaBackup
 flatpak install -y flathub com.rafaelmardojai.Blanket
