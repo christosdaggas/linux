@@ -56,7 +56,7 @@ chmod +x fedora-setup.sh
 - Ollama: User-friendly and powerful software for running LLMs locally.
 - Alpaca: Local and online AI GUI.
 
-### 🌐 Web & Development Tools
+### 🌐 A.I. Tools
 - Google Chrome web browser.
 - Visual Studio Code (official Microsoft repository).
 
