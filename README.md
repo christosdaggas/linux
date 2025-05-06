@@ -1,4 +1,4 @@
-# Fedora 41 Quick Setup Script 🚀
+# Fedora 42 Quick Setup Script 🚀
 
 This script automates the initial setup and configuration of Fedora 41, simplifying system optimization, customization, productivity improvements, and visual enhancements, resulting in a clean, efficient, and fully-featured Linux environment.
 
