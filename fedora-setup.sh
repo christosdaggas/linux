@@ -195,6 +195,12 @@ wget -P /usr/share/fonts/ \
   https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf
 sudo fc-cache -vf
 
+
+# -------------------------
+# Media Codecs
+# -------------------------
+sudo dnf install libavcodec-freeworld
+
 # -------------------------
 # Fonts & Font Config (Moved to End)
 # -------------------------
