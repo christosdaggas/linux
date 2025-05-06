@@ -95,7 +95,7 @@ gsettings set org.gnome.desktop.wm.preferences resize-with-right-button true
 # -------------------------
 # Productivity Applications
 # -------------------------
-sudo dnf install -y thunderbird filezilla flatseal
+sudo dnf install -y thunderbird filezilla flatseal decibels dconf-editor meld
 
 # -------------------------
 # Optional: LibreOffice Suite (with Greek language support)
@@ -121,46 +121,27 @@ fi
 # -------------------------
 # Optional: Applications
 # -------------------------
+flatpak install -y flathub com.mattjakeman.ExtensionManager
+flatpak install -y flathub work.openpaper.Paperwork
 flatpak install -y flathub org.gnome.World.PikaBackup
 flatpak install -y flathub com.rafaelmardojai.Blanket
-flatpak install -y flathub com.github.diegoinacio.Iconic
+flatpak install -y flathub io.github.nokse22.Exhibit
 flatpak install -y flathub io.gitlab.news_flash.NewsFlash
+flatpak install -y flathub nl.emphisia.icon
+flatpak install -y flathub org.nickvision.money
 flatpak install -y flathub org.signal.Signal
 
 # -------------------------
-# Optional: AI Tools - Ollama and Alpaca
+# Optional: AI Tools - Ollama (installs Alpaca automatically)
 # -------------------------
-echo "Select AI tools to install:"
-echo "1) Ollama (LLM backend)"
-echo "2) Alpaca (Flatpak GUI)"
-echo "3) Both"
-echo "4) None"
-read -p "Enter your choice (e.g., 1 2): " AI_SELECTION
-
-# Convert input into an array
-read -a AI_ARRAY <<< "$AI_SELECTION"
-
-INSTALL_OLLAMA=false
-INSTALL_ALPACA=false
-
-for choice in "${AI_ARRAY[@]}"; do
-  case $choice in
-    1) INSTALL_OLLAMA=true ;;
-    2) INSTALL_ALPACA=true ;;
-    3) INSTALL_OLLAMA=true; INSTALL_ALPACA=true; break ;;
-    4) echo "Skipping AI tools installation."; break ;;
-    *) echo "Invalid choice: $choice" ;;
-  esac
-done
-
-if $INSTALL_OLLAMA; then
+read -p "Do you want to install Ollama (Alpaca GUI will be installed automatically)? [y/N]: " INSTALL_OLLAMA_CHOICE
+if [[ "$INSTALL_OLLAMA_CHOICE" =~ ^[Yy]$ ]]; then
   echo "Installing Ollama..."
   curl -fsSL https://ollama.com/install.sh | sh
-fi
-
-if $INSTALL_ALPACA; then
-  echo "Installing Alpaca (Flatpak)..."
+  echo "Installing Alpaca (Flatpak GUI)..."
   flatpak install -y flathub com.jeffser.Alpaca
+else
+  echo "Skipping Ollama and Alpaca installation."
 fi
 
 # -------------------------
@@ -194,7 +175,6 @@ wget -P /usr/share/fonts/ \
   https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Italic.ttf \
   https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf
 sudo fc-cache -vf
-
 
 # -------------------------
 # Media Codecs
