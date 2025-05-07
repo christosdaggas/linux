@@ -91,7 +91,7 @@ gsettings set org.gnome.desktop.wm.preferences resize-with-right-button true
 # -------------------------
 # Productivity Applications
 # -------------------------
-sudo dnf install -y thunderbird filezilla flatseal decibels dconf-editor meld
+sudo dnf install -y thunderbird filezilla flatseal decibels dconf-editor papers
 
 # -------------------------
 # Optional: LibreOffice Suite (with Greek language support)
@@ -119,14 +119,17 @@ fi
 # -------------------------
 flatpak install -y flathub com.mattjakeman.ExtensionManager
 flatpak install -y flathub io.github.realmazharhussain.GdmSettings
-flatpak install -y flathub work.openpaper.Paperwork
+flatpak install -y flathub io.github.flattool.Warehouse
+flatpak install -y flathub org.gustavoperedo.FontDownloader
+flatpak install -y flathub org.gnome.Firmware
+flatpak install -y org.gnome.Calls
+flatpak install -y flathub com.belmoussaoui.Authenticator
 flatpak install -y flathub org.gnome.World.PikaBackup
-flatpak install -y flathub com.rafaelmardojai.Blanket
 flatpak install -y flathub io.github.nokse22.Exhibit
 flatpak install -y flathub io.gitlab.news_flash.NewsFlash
-flatpak install -y flathub nl.emphisia.icon
 flatpak install -y flathub org.nickvision.money
 flatpak install -y flathub org.signal.Signal
+flatpak install -y flathub com.spotify.Client
 
 # -------------------------
 # Optional: AI Tools - Ollama (installs Alpaca GUI automatically)
