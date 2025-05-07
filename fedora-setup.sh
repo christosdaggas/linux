@@ -176,6 +176,62 @@ wget -P /usr/share/fonts/ \
   https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf
 sudo fc-cache -vf
 
+
+# -------------------------
+# Optional: GNOME Shell Extensions
+# -------------------------
+read -p "Do you want to install GNOME Shell extensions (Dash to Dock, ArcMenu, Blur My Shell, etc.)? [y/N]: " INSTALL_EXTENSIONS
+if [[ "$INSTALL_EXTENSIONS" =~ ^[Yy]$ ]]; then
+  echo "Installing GNOME Shell extensions..."
+
+  sudo dnf install -y jq curl unzip gnome-extensions gnome-shell-extension-prefs
+
+  declare -A EXTENSIONS=(
+    [6]="applications-menu@gnome-shell-extensions.gcampax.github.com"
+    [19]="user-theme@gnome-shell-extensions.gcampax.github.com"
+    [3628]="arcmenu@arcmenu.com"
+    [3193]="blur-my-shell@aunetx"
+    [6807]="system-monitor@paradoxxx.zero.gmail.com"
+    [7]="drive-menu@gnome-shell-extensions.gcampax.github.com"
+    [779]="clipboard-indicator@tudmotu.com"
+    [1460]="Vitals@CoreCoding.com"
+    [8]="places-menu@gnome-shell-extensions.gcampax.github.com"
+    [1401]="bluetooth-quick-connect@bjarosze.gmail.com"
+    [307]="dash-to-dock@micxgx.gmail.com"
+  )
+
+  EXT_DIR="$HOME/.local/share/gnome-shell/extensions"
+  mkdir -p "$EXT_DIR"
+
+  SHELL_VERSION=$(gnome-shell --version | awk '{print $3}')
+
+  for ID in "${!EXTENSIONS[@]}"; do
+    UUID="${EXTENSIONS[$ID]}"
+    echo "➡️ Installing Extension ID $ID ($UUID)..."
+
+    EXT_INFO=$(curl -s "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION")
+    EXT_URL=$(echo "$EXT_INFO" | jq -r '.download_url')
+
+    if [[ "$EXT_URL" == "null" || -z "$EXT_URL" ]]; then
+      echo "❌ Skipping $UUID (not compatible with GNOME $SHELL_VERSION or not found)."
+      continue
+    fi
+
+    TMP_ZIP="/tmp/$UUID.zip"
+    curl -L -o "$TMP_ZIP" "https://extensions.gnome.org$EXT_URL"
+    unzip -o "$TMP_ZIP" -d "$EXT_DIR/$UUID"
+    rm "$TMP_ZIP"
+
+    gnome-extensions enable "$UUID" || echo "⚠️ Could not enable $UUID – check manually."
+    echo "✅ Installed and enabled $UUID."
+  done
+
+  echo -e "\n🌀 Extensions installed. Restart GNOME Shell (Alt+F2 → r on X11, or logout/login on Wayland)."
+else
+  echo "Skipping GNOME Shell extensions installation."
+fi
+
+
 # -------------------------
 # Media Codecs
 # -------------------------
