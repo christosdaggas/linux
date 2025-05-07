@@ -201,6 +201,8 @@ cat <<EOL > ~/.config/fontconfig/fonts.conf
 </fontconfig>
 EOL
 
+#!/bin/bash
+
 # -------------------------
 # Optional: GNOME Shell Extensions
 # -------------------------
@@ -231,29 +233,37 @@ if [[ "$INSTALL_EXTENSIONS" =~ ^[Yy]$ ]]; then
 
   for ID in "${!EXTENSIONS[@]}"; do
     UUID="${EXTENSIONS[$ID]}"
-    echo "\u27A1\uFE0F Installing Extension ID $ID ($UUID)..."
+    echo -e "\u27A1\uFE0F Installing Extension ID $ID ($UUID)..."
 
     EXT_INFO=$(curl -s "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION")
     EXT_URL=$(echo "$EXT_INFO" | jq -r '.download_url')
 
     if [[ "$EXT_URL" == "null" || -z "$EXT_URL" ]]; then
-      echo "\u274C Skipping $UUID (not compatible with GNOME $SHELL_VERSION or not found)."
+      echo -e "\u274C Skipping $UUID (not compatible with GNOME $SHELL_VERSION or not found)."
       continue
     fi
 
     TMP_ZIP="/tmp/$UUID.zip"
+    EXT_PATH="$EXT_DIR/$UUID"
     curl -L -o "$TMP_ZIP" "https://extensions.gnome.org$EXT_URL"
-    unzip -o "$TMP_ZIP" -d "$EXT_DIR/$UUID"
+    unzip -o "$TMP_ZIP" -d "$EXT_PATH"
     rm "$TMP_ZIP"
 
-    gnome-extensions enable "$UUID" || echo "\u26A0\uFE0F Could not enable $UUID – check manually."
-    echo "\u2705 Installed and enabled $UUID."
+    # Compile schemas if they exist
+    if [ -d "$EXT_PATH/schemas" ]; then
+      echo "Compiling schemas for $UUID..."
+      glib-compile-schemas "$EXT_PATH/schemas"
+    fi
+
+    gnome-extensions enable "$UUID" || echo -e "\u26A0\uFE0F Could not enable $UUID – check manually."
+    echo -e "\u2705 Installed and enabled $UUID."
   done
 
   echo -e "\n\uD83D\uDD00 Extensions installed. Restart GNOME Shell (Alt+F2 → r on X11, or logout/login on Wayland)."
 else
   echo "Skipping GNOME Shell extensions installation."
 fi
+
 
 # -------------------------
 # Final Reboot
