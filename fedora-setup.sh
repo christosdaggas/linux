@@ -5,7 +5,6 @@ set -x
 # Fedora Setup Script
 # -------------------------------------------------
 
-#
 # -------------------------
 # System Preparation
 # -------------------------
@@ -48,10 +47,6 @@ sudo fwupdmgr update
 # -------------------------
 sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins
 
-# Enable snap support
-# sudo dnf install -y snapd
-# sudo ln -s /var/lib/snapd/snap /snap
-
 # -------------------------
 # Optional: Install Cockpit Web Console
 # -------------------------
@@ -62,7 +57,6 @@ if [[ "$INSTALL_COCKPIT" =~ ^[Yy]$ ]]; then
   sudo bash <<'EOF'
   dnf install -y cockpit
   systemctl enable --now cockpit.socket
-  # Check if firewalld is active and allow Cockpit through it
   if systemctl is-active --quiet firewalld; then
     firewall-cmd --add-service=cockpit --permanent
     firewall-cmd --reload
@@ -73,12 +67,10 @@ else
   echo "Skipping Cockpit installation."
 fi
 
-
 # -------------------------
 # GNOME Tweaks & Behavior
 # -------------------------
 sudo dnf install -y gnome-tweaks gnome-extensions-app gnome-calendar gnome-usage
-# GTK4 file chooser tweak and behavior tweaks
 gsettings set org.gtk.gtk4.Settings.FileChooser sort-directories-first true
 gsettings set org.gnome.desktop.wm.preferences button-layout ":minimize,maximize,close"
 gsettings set org.gnome.desktop.wm.keybindings switch-windows "['<Alt>Tab']"
@@ -94,7 +86,7 @@ gsettings set org.gnome.desktop.wm.preferences resize-with-right-button true
 sudo dnf install -y thunderbird filezilla flatseal decibels dconf-editor papers
 
 # -------------------------
-# Optional: LibreOffice Suite (with Greek language support)
+# Optional: LibreOffice Suite
 # -------------------------
 read -p "Do you want to install LibreOffice with English and Greek language support? [y/N]: " INSTALL_LIBREOFFICE
 if [[ "$INSTALL_LIBREOFFICE" =~ ^[Yy]$ ]]; then
@@ -132,7 +124,7 @@ flatpak install -y flathub org.signal.Signal
 flatpak install -y flathub com.spotify.Client
 
 # -------------------------
-# Optional: AI Tools - Ollama (installs Alpaca GUI automatically)
+# Optional: AI Tools - Ollama
 # -------------------------
 read -p "Do you want to install Ollama (Alpaca GUI will be installed automatically)? [y/N]: " INSTALL_OLLAMA_CHOICE
 if [[ "$INSTALL_OLLAMA_CHOICE" =~ ^[Yy]$ ]]; then
@@ -147,7 +139,6 @@ fi
 # -------------------------
 # Web & Code Tools
 # -------------------------
-# Visual Studio Code
 sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
 sudo tee /etc/yum.repos.d/vscode.repo <<EOL
 [code]
@@ -160,7 +151,6 @@ EOL
 sudo dnf check-update
 sudo dnf install -y code
 
-# Google Chrome
 sudo dnf install -y fedora-workstation-repositories
 sudo dnf config-manager --set-enabled google-chrome
 sudo dnf install -y google-chrome-stable
@@ -176,6 +166,40 @@ wget -P /usr/share/fonts/ \
   https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf
 sudo fc-cache -vf
 
+# -------------------------
+# Media Codecs
+# -------------------------
+sudo dnf install libavcodec-freeworld
+
+# -------------------------
+# Fonts & Font Config
+# -------------------------
+sudo dnf copr enable --assumeyes atim/ubuntu-fonts
+sudo dnf install -y \
+  rsms-inter-fonts \
+  ubuntu-family-fonts \
+  dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts \
+  liberation-sans-fonts liberation-serif-fonts liberation-mono-fonts \
+  google-noto-sans-fonts google-noto-serif-fonts google-noto-mono-fonts \
+  fira-code-fonts mozilla-fira-sans-fonts google-roboto-fonts \
+  jetbrains-mono-fonts
+
+wget https://downloads.sourceforge.net/project/mscorefonts2/rpms/msttcore-fonts-installer-2.6-1.noarch.rpm -O /tmp/msfonts.rpm
+sudo dnf install -y /tmp/msfonts.rpm
+
+mkdir -p ~/.config/fontconfig
+cat <<EOL > ~/.config/fontconfig/fonts.conf
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <match target="font">
+    <edit name="hinting" mode="assign"><bool>true</bool></edit>
+    <edit name="hintstyle" mode="assign"><const>hintfull</const></edit>
+    <edit name="antialias" mode="assign"><bool>true</bool></edit>
+    <edit name="rgba" mode="assign"><const>rgb</const></edit>
+  </match>
+</fontconfig>
+EOL
 
 # -------------------------
 # Optional: GNOME Shell Extensions
@@ -207,13 +231,13 @@ if [[ "$INSTALL_EXTENSIONS" =~ ^[Yy]$ ]]; then
 
   for ID in "${!EXTENSIONS[@]}"; do
     UUID="${EXTENSIONS[$ID]}"
-    echo "➡️ Installing Extension ID $ID ($UUID)..."
+    echo "\u27A1\uFE0F Installing Extension ID $ID ($UUID)..."
 
     EXT_INFO=$(curl -s "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION")
     EXT_URL=$(echo "$EXT_INFO" | jq -r '.download_url')
 
     if [[ "$EXT_URL" == "null" || -z "$EXT_URL" ]]; then
-      echo "❌ Skipping $UUID (not compatible with GNOME $SHELL_VERSION or not found)."
+      echo "\u274C Skipping $UUID (not compatible with GNOME $SHELL_VERSION or not found)."
       continue
     fi
 
@@ -222,58 +246,19 @@ if [[ "$INSTALL_EXTENSIONS" =~ ^[Yy]$ ]]; then
     unzip -o "$TMP_ZIP" -d "$EXT_DIR/$UUID"
     rm "$TMP_ZIP"
 
-    gnome-extensions enable "$UUID" || echo "⚠️ Could not enable $UUID – check manually."
-    echo "✅ Installed and enabled $UUID."
+    gnome-extensions enable "$UUID" || echo "\u26A0\uFE0F Could not enable $UUID – check manually."
+    echo "\u2705 Installed and enabled $UUID."
   done
 
-  echo -e "\n🌀 Extensions installed. Restart GNOME Shell (Alt+F2 → r on X11, or logout/login on Wayland)."
+  echo -e "\n\uD83D\uDD00 Extensions installed. Restart GNOME Shell (Alt+F2 → r on X11, or logout/login on Wayland)."
 else
   echo "Skipping GNOME Shell extensions installation."
 fi
 
-
 # -------------------------
-# Media Codecs
+# Final Reboot
 # -------------------------
-sudo dnf install libavcodec-freeworld
-
-# -------------------------
-# Fonts & Font Config (Moved to End)
-# -------------------------
-
-# Enable Ubuntu fonts COPR
-sudo dnf copr enable --assumeyes atim/ubuntu-fonts
-
-# Install various fonts
-sudo dnf install -y \
-  rsms-inter-fonts \
-  ubuntu-family-fonts \
-  dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts \
-  liberation-sans-fonts liberation-serif-fonts liberation-mono-fonts \
-  google-noto-sans-fonts google-noto-serif-fonts google-noto-mono-fonts \
-  fira-code-fonts mozilla-fira-sans-fonts google-roboto-fonts \
-  jetbrains-mono-fonts
-
-# Microsoft Core Fonts
-wget https://downloads.sourceforge.net/project/mscorefonts2/rpms/msttcore-fonts-installer-2.6-1.noarch.rpm -O /tmp/msfonts.rpm
-sudo dnf install -y /tmp/msfonts.rpm
-
-# Optional fontconfig tuning
-mkdir -p ~/.config/fontconfig
-cat <<EOL > ~/.config/fontconfig/fonts.conf
-<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-  <match target="font">
-    <edit name="hinting" mode="assign"><bool>true</bool></edit>
-    <edit name="hintstyle" mode="assign"><const>hintfull</const></edit>
-    <edit name="antialias" mode="assign"><bool>true</bool></edit>
-    <edit name="rgba" mode="assign"><const>rgb</const></edit>
-  </match>
-</fontconfig>
-EOL
-
-echo "✅ Fedora 41 setup completed. Reboot recommended."
+echo "\u2705 Fedora 41 setup completed. Reboot recommended."
 read -rp "Do you want to reboot now? [y/N]: " RESPONSE
 if [[ "$RESPONSE" =~ ^[Yy]$ ]]; then
     echo "Rebooting..."
