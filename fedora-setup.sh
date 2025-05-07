@@ -134,6 +134,7 @@ flatpak install -y flathub com.mattjakeman.ExtensionManager
 flatpak install -y flathub io.github.realmazharhussain.GdmSettings
 flatpak install -y flathub io.github.flattool.Warehouse
 flatpak install -y flathub org.gustavoperedo.FontDownloader
+flatpak install -y flathub com.usebottles.bottles
 flatpak install -y flathub org.gnome.Firmware
 flatpak install -y org.gnome.Calls
 flatpak install -y flathub com.belmoussaoui.Authenticator
@@ -143,6 +144,8 @@ flatpak install -y flathub io.gitlab.news_flash.NewsFlash
 flatpak install -y flathub org.nickvision.money
 flatpak install -y flathub org.signal.Signal
 flatpak install -y flathub com.spotify.Client
+flatpak install -y flathub com.protonvpn.www
+flatpak install -y flathub com.bitwarden.desktop
 
 # -------------------------
 # Optional: AI Tools - Ollama
