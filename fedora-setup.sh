@@ -6,6 +6,23 @@ set -x
 # -------------------------------------------------
 
 # -------------------------
+# Sudo Credential Caching
+# -------------------------
+# Check for sudo privileges and cache credentials
+echo -e "\e[44m\e[1mPlease enter your sudo password to start the setup:\e[0m"
+sudo -v || { echo "Error: Failed to obtain sudo privileges"; exit 1; }
+
+# Background process to keep sudo alive
+while true; do
+    sudo -v
+    sleep 60
+done &
+SUDO_PID=$!
+
+# Kill the background loop on script exit
+trap 'kill $SUDO_PID' EXIT
+
+# -------------------------
 # System Preparation
 # -------------------------
 
@@ -20,7 +37,8 @@ EOL
 # -------------------------
 # Change hostname
 # -------------------------
-read -p "Enter new hostname: " NEW_HOSTNAME
+echo -e "\e[44m\e[1mEnter new hostname:\e[0m"
+read -r NEW_HOSTNAME
 echo "Changing hostname to $NEW_HOSTNAME..."
 sudo hostnamectl set-hostname "$NEW_HOSTNAME"
 sudo sed -i "s/127.0.1.1.*/127.0.1.1   $NEW_HOSTNAME/" /etc/hosts
@@ -45,12 +63,13 @@ sudo fwupdmgr update
 # -------------------------
 # System Utilities
 # -------------------------
-sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins
+sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins glib2
 
 # -------------------------
 # Optional: Install Cockpit Web Console
 # -------------------------
-read -p "Do you want to install Cockpit (web-based system manager)? [y/N]: " INSTALL_COCKPIT
+echo -e "\e[44m\e[1mDo you want to install Cockpit (web-based system manager)? [y/N]:\e[0m"
+read -r INSTALL_COCKPIT
 
 if [[ "$INSTALL_COCKPIT" =~ ^[Yy]$ ]]; then
   echo "Installing Cockpit..."
@@ -88,7 +107,8 @@ sudo dnf install -y thunderbird filezilla flatseal decibels dconf-editor papers
 # -------------------------
 # Optional: LibreOffice Suite
 # -------------------------
-read -p "Do you want to install LibreOffice with English and Greek language support? [y/N]: " INSTALL_LIBREOFFICE
+echo -e "\e[44m\e[1mDo you want to install LibreOffice with English and Greek language support? [y/N]:\e[0m"
+read -r INSTALL_LIBREOFFICE
 if [[ "$INSTALL_LIBREOFFICE" =~ ^[Yy]$ ]]; then
   echo "Installing LibreOffice and Greek language pack..."
   sudo dnf install -y libreoffice libreoffice-langpack-el libreoffice-langpack-en
@@ -99,7 +119,8 @@ fi
 # -------------------------
 # Optional: Media Applications
 # -------------------------
-read -p "Do you want to install media applications (VLC, GIMP, Inkscape, Krita)? [y/N]: " INSTALL_MEDIA_APPS
+echo -e "\e[44m\e[1mDo you want to install media applications (VLC, GIMP, Inkscape, Krita)? [y/N]:\e[0m"
+read -r INSTALL_MEDIA_APPS
 if [[ "$INSTALL_MEDIA_APPS" =~ ^[Yy]$ ]]; then
   sudo dnf install -y vlc gimp inkscape krita
 else
@@ -126,7 +147,8 @@ flatpak install -y flathub com.spotify.Client
 # -------------------------
 # Optional: AI Tools - Ollama
 # -------------------------
-read -p "Do you want to install Ollama (Alpaca GUI will be installed automatically)? [y/N]: " INSTALL_OLLAMA_CHOICE
+echo -e "\e[44m\e[1mDo you want to install Ollama (Alpaca GUI will be installed automatically)? [y/N]:\e[0m"
+read -r INSTALL_OLLAMA_CHOICE
 if [[ "$INSTALL_OLLAMA_CHOICE" =~ ^[Yy]$ ]]; then
   echo "Installing Ollama..."
   curl -fsSL https://ollama.com/install.sh | sh
@@ -201,12 +223,11 @@ cat <<EOL > ~/.config/fontconfig/fonts.conf
 </fontconfig>
 EOL
 
-#!/bin/bash
-
 # -------------------------
 # Optional: GNOME Shell Extensions
 # -------------------------
-read -p "Do you want to install GNOME Shell extensions (Dash to Dock, ArcMenu, Blur My Shell, etc.)? [y/N]: " INSTALL_EXTENSIONS
+echo -e "\e[44m\e[1mDo you want to install GNOME Shell extensions (Dash to Dock, ArcMenu, Blur My Shell, etc.)? [y/N]:\e[0m"
+read -r INSTALL_EXTENSIONS
 if [[ "$INSTALL_EXTENSIONS" =~ ^[Yy]$ ]]; then
   echo "Installing GNOME Shell extensions..."
 
@@ -264,12 +285,11 @@ else
   echo "Skipping GNOME Shell extensions installation."
 fi
 
-
 # -------------------------
 # Final Reboot
 # -------------------------
-echo "\u2705 Fedora 41 setup completed. Reboot recommended."
-read -rp "Do you want to reboot now? [y/N]: " RESPONSE
+echo -e "\e[44m\e[1m\u2705 Fedora 41 setup completed. Reboot recommended. Reboot now? [y/N]:\e[0m"
+read -r RESPONSE
 if [[ "$RESPONSE" =~ ^[Yy]$ ]]; then
     echo "Rebooting..."
     sleep 2
