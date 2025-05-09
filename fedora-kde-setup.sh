@@ -35,7 +35,7 @@ echo "Done! New hostname is $NEW_HOSTNAME"
 # -------------------------
 # Cleanup Unwanted Defaults
 # -------------------------
-sudo dnf remove -y evince rhythmbox abrt gnome-tour mediawriter
+sudo dnf remove -y evince mediawriter
 sudo dnf update -y
 # Enable RPM Fusion repositories
 sudo dnf install -y \
@@ -48,7 +48,9 @@ sudo fwupdmgr update
 # -------------------------
 # System Utilities
 # -------------------------
-sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins glib2
+sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins glib2 flatpak
+sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
 # -------------------------
 # Optional: Install Cockpit Web Console
 # -------------------------
