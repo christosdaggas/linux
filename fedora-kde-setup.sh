@@ -1,24 +1,19 @@
-
 #!/bin/bash
 set -x
-
 # -------------------------------------------------
 # Fedora Setup Script
 # -------------------------------------------------
-
 # -------------------------
 # Sudo Credential Caching
 # -------------------------
 echo -e "\e[44m\e[1mPlease enter your sudo password to start the setup:\e[0m"
 sudo -v || { echo "Error: Failed to obtain sudo privileges"; exit 1; }
-
 while true; do
     sudo -v
     sleep 60
 done &
 SUDO_PID=$!
 trap 'kill $SUDO_PID' EXIT
-
 # -------------------------
 # System Preparation
 # -------------------------
@@ -28,7 +23,6 @@ max_parallel_downloads=10
 deltarpm=True
 keepcache=True
 EOL
-
 # -------------------------
 # Change hostname
 # -------------------------
@@ -38,27 +32,23 @@ echo "Changing hostname to $NEW_HOSTNAME..."
 sudo hostnamectl set-hostname "$NEW_HOSTNAME"
 sudo sed -i "s/127.0.1.1.*/127.0.1.1   $NEW_HOSTNAME/" /etc/hosts
 echo "Done! New hostname is $NEW_HOSTNAME"
-
 # -------------------------
 # Cleanup Unwanted Defaults
 # -------------------------
+sudo dnf remove -y evince rhythmbox abrt gnome-tour mediawriter
 sudo dnf update -y
-
 # Enable RPM Fusion repositories
 sudo dnf install -y \
   https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
   https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
-
 # Firmware updates
 sudo fwupdmgr refresh --force
 sudo fwupdmgr get-updates
 sudo fwupdmgr update
-
 # -------------------------
 # System Utilities
 # -------------------------
 sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins glib2
-
 # -------------------------
 # Optional: Install Cockpit Web Console
 # -------------------------
@@ -75,7 +65,6 @@ if [[ "$INSTALL_COCKPIT" =~ ^[Yy]$ ]]; then
 else
   echo "Skipping Cockpit installation."
 fi
-
 # -------------------------
 # Optional: LibreOffice Suite
 # -------------------------
@@ -86,7 +75,6 @@ if [[ "$INSTALL_LIBREOFFICE" =~ ^[Yy]$ ]]; then
 else
   echo "Skipping LibreOffice installation."
 fi
-
 # -------------------------
 # Optional: Media Applications
 # -------------------------
@@ -97,16 +85,13 @@ if [[ "$INSTALL_MEDIA_APPS" =~ ^[Yy]$ ]]; then
 else
   echo "Skipping media applications installation."
 fi
-
 # -------------------------
 # KDE Animation Removal (if KDE is detected)
 # -------------------------
 if [[ "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
   echo -e "\e[42mDetected KDE Plasma environment. Disabling all animations...\e[0m"
-
   CONFIG_FILE="$HOME/.config/kwinrc"
   cp "$CONFIG_FILE" "$CONFIG_FILE.bak.$(date +%s)"
-
   kwriteconfig5 --file kwinrc --group Compositing --key AnimationSpeed "0.0"
   kwriteconfig5 --file kwinrc --group Compositing --key Enabled "false"
   kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_maximizeEnabled false
@@ -116,12 +101,9 @@ if [[ "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
   kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_logoutEnabled false
   kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_minimizeanimationEnabled false
   kwriteconfig5 --file kdeglobals --group KDE --key GraphicEffectsLevel "0"
-
   qdbus org.kde.KWin /KWin reconfigure
   kwin_x11 --replace & disown
-
   echo "✅ KDE animations disabled. Log out and back in for full effect."
-
   echo -e "\e[44m\e[1mApplying KDE advanced tweaks...\e[0m"
   kwriteconfig5 --file kwinrc --group Compositing --key LatencyPolicy "LowLatency"
   kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_blurEnabled false
@@ -138,6 +120,45 @@ if [[ "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
   qdbus org.kde.KWin /KWin reconfigure
 else
   echo "Skipping KDE tweaks (non-KDE environment)."
+fi
+
+# -------------------------
+# -------------------------
+# KDE Panel Tweaks
+# -------------------------
+if [[ "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
+  echo -e "\e[44m\e[1mTweaking KDE Panel (navigation bar)...\e[0m"
+  PANEL_CONFIG="$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc"
+  # Backup current config
+  cp "$PANEL_CONFIG" "$PANEL_CONFIG.bak.$(date +%s)"
+  # Force panel to bottom, no margin, always visible
+  sed -i '/\[Containments\]\[.*\]\[General\]/,/^$/ {
+    /location=/d
+    /panelVisibility=/d
+    a location=bottom\npanelVisibility=0
+  }' "$PANEL_CONFIG"
+  # Force margin to 0 and restore height to 35 for clean layout
+  sed -i '/\[Containments\]\[.*\]\[General\]/,/^$/ {
+    /thickness=/d
+    a thickness=35
+  }' "$PANEL_CONFIG"
+  echo "KDE panel configured to bottom position, always visible, with no margin."
+  # Restart plasmashell to apply changes
+  killall plasmashell && kstart5 plasmashell &
+else
+  echo "Skipping KDE panel tweaks (non-KDE environment)."
+fi
+
+# -------------------------
+# KDE Dark Theme Selection
+# -------------------------
+if [[ "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
+  echo -e "\e[44m\e[1mSetting KDE to use Breeze Dark theme...\e[0m"
+  lookandfeeltool -a org.kde.breezedark.desktop || echo "Breeze Dark not available"
+  kwriteconfig5 --file kdeglobals --group General --key ColorScheme "BreezeDark"
+  qdbus org.kde.KWin /KWin reconfigure
+else
+  echo "Skipping dark theme (non-KDE environment)."
 fi
 
 # -------------------------
@@ -164,7 +185,6 @@ enabled=1
 gpgcheck=1
 gpgkey=https://packages.microsoft.com/keys/microsoft.asc
 EOL
-
 sudo dnf check-update
 sudo dnf install -y code
 sudo dnf install -y fedora-workstation-repositories
@@ -197,10 +217,8 @@ sudo dnf install -y \
   liberation-sans-fonts liberation-serif-fonts liberation-mono-fonts \
   google-noto-sans-fonts google-noto-serif-fonts google-noto-mono-fonts \
   fira-code-fonts mozilla-fira-sans-fonts google-roboto-fonts jetbrains-mono-fonts
-
 wget https://downloads.sourceforge.net/project/mscorefonts2/rpms/msttcore-fonts-installer-2.6-1.noarch.rpm -O /tmp/msfonts.rpm
 sudo dnf install -y /tmp/msfonts.rpm
-
 mkdir -p ~/.config/fontconfig
 cat <<EOL > ~/.config/fontconfig/fonts.conf
 <?xml version="1.0"?>
@@ -214,39 +232,6 @@ cat <<EOL > ~/.config/fontconfig/fonts.conf
   </match>
 </fontconfig>
 EOL
-
-
-# -------------------------
-# KDE Panel Tweaks
-# -------------------------
-if [[ "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
-  echo -e "\e[44m\e[1mTweaking KDE Panel (navigation bar)...\e[0m"
-
-  PANEL_CONFIG="$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc"
-
-  # Backup current config
-  cp "$PANEL_CONFIG" "$PANEL_CONFIG.bak.$(date +%s)"
-
-  # Force panel to bottom, no margin, always visible
-  sed -i '/\[Containments\]\[.*\]\[General\]/,/^$/ {
-    /location=/d
-    /panelVisibility=/d
-    a location=bottom\npanelVisibility=0
-  }' "$PANEL_CONFIG"
-
-  # Force margin to 0 and restore height to 35 for clean layout
-  sed -i '/\[Containments\]\[.*\]\[General\]/,/^$/ {
-    /thickness=/d
-    a thickness=35
-  }' "$PANEL_CONFIG"
-
-  echo "KDE panel configured to bottom position, always visible, with no margin."
-
-  # Restart plasmashell to apply changes
-  killall plasmashell && kstart5 plasmashell &
-else
-  echo "Skipping KDE panel tweaks (non-KDE environment)."
-fi
 
 # -------------------------
 # Final Reboot
