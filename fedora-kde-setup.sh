@@ -168,7 +168,7 @@ echo -e "\e[44m\e[1mDo you want to install Ollama (Alpaca GUI will be installed 
 read -r INSTALL_OLLAMA_CHOICE
 if [[ "$INSTALL_OLLAMA_CHOICE" =~ ^[Yy]$ ]]; then
   curl -fsSL https://ollama.com/install.sh | sh
-  flatpak install -y flathub com.jeffser.Alpaca
+  flatpak install --assumeyes flathub com.jeffser.Alpaca
 else
   echo "Skipping Ollama and Alpaca installation."
 fi
