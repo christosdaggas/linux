@@ -182,6 +182,7 @@ if [[ "$INSTALL_FLATPAK_APPS" =~ ^[Yy]$ ]]; then
     io.gitlab.news_flash.NewsFlash \
     org.nickvision.money \
     org.signal.Signal \
+    md.obsidian.Obsidian \
     org.gnome.Papers
 else
   echo "Skipping Flatpak applications."
