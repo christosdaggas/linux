@@ -95,6 +95,37 @@ sudo fwupdmgr update
 # -------------------------
 sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins glib2
 
+ # -------------------------
+ # Security Enhancements
+ # -------------------------
+ sudo dnf install -y dnf-automatic
+ sudo systemctl enable --now dnf-automatic.timer
+ sudo firewall-cmd --set-default-zone=workstation
+ sudo dnf install -y fail2ban rkhunter lynis
+ 
+ if mount | grep -q ' on / type btrfs'; then
+  sudo dnf install -y snapper
+  sudo snapper -c root create-config /
+  sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer
+ fi
+ 
+ if [[ "$(getenforce)" != "Enforcing" ]]; then
+  echo "Warning: SELinux is not in enforcing mode."
+ fi
+ 
+
+ # -------------------------
+ # User-Experience Tweaks
+ # -------------------------
+ sudo systemctl enable --now fstrim.timer
+ sudo dnf install -y gnome-color-manager
+ sudo dnf install -y pavucontrol helvum
+ sudo systemctl enable --now systemd-readahead-collect systemd-readahead-replay
+ echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swappiness.conf
+ sudo sysctl --system
+ sudo dnf install -y zram-generator-defaults
+ sudo systemctl enable --now systemd-zram-setup@zram0
+
 # -------------------------
 # Optional: Cockpit Web Console
 # -------------------------
@@ -123,6 +154,7 @@ read -r INSTALL_GNOME_TWEAKS
 if [[ "$INSTALL_GNOME_TWEAKS" =~ ^[Yy]$ ]]; then
   echo "Installing and configuring GNOME Tweaks..."
   sudo dnf install -y gnome-tweaks gnome-extensions-app gnome-calendar gnome-usage
+  gsettings set org.gnome.desktop.interface enable-animations false
   gsettings set org.gtk.gtk4.Settings.FileChooser sort-directories-first true
   gsettings set org.gnome.desktop.wm.preferences button-layout ":minimize,maximize,close"
   gsettings set org.gnome.desktop.wm.keybindings switch-windows "['<Alt>Tab']"
@@ -130,7 +162,14 @@ if [[ "$INSTALL_GNOME_TWEAKS" =~ ^[Yy]$ ]]; then
   gsettings set org.gnome.desktop.wm.keybindings switch-windows-backward "['<Shift><Alt>Tab']"
   gsettings set org.gnome.desktop.wm.keybindings switch-applications-backward "['<Shift><Super>Tab']"
   gsettings set org.gnome.nautilus.preferences recursive-search 'never'
+  gsettings set org.gnome.mutter experimental-features "['scale-monitor-framebuffer']"
+  gsettings set org.gnome.settings-daemon.plugins.color night-light-enabled true
+  gsettings set org.gtk.Settings.FileChooser show-recent false
   gsettings set org.gnome.desktop.wm.preferences resize-with-right-button true
+  gsettings set org.gnome.shell enable-hot-corner true
+  gsettings set org.gnome.nautilus.preferences show-image-thumbnails 'always'
+  gsettings set org.gnome.nautilus.preferences show-hidden-files true
+  gsettings set org.gnome.nautilus.preferences always-use-location-entry true
 else
   echo "Skipping GNOME Tweaks & Behavior."
 fi
