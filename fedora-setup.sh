@@ -177,15 +177,11 @@ if [[ "$INSTALL_FLATPAK_APPS" =~ ^[Yy]$ ]]; then
     com.usebottles.bottles \
     org.gnome.Firmware \
     org.gnome.Calls \
-    com.belmoussaoui.Authenticator \
     org.gnome.World.PikaBackup \
     io.github.nokse22.Exhibit \
     io.gitlab.news_flash.NewsFlash \
     org.nickvision.money \
     org.signal.Signal \
-    com.spotify.Client \
-    com.protonvpn.www \
-    com.bitwarden.desktop \
     org.gnome.Papers
 else
   echo "Skipping Flatpak applications."
