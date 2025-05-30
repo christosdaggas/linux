@@ -254,6 +254,7 @@ if ask_user "Install GNOME Shell extensions?"; then
     [8]="places-menu@gnome-shell-extensions.gcampax.github.com"
     [1401]="bluetooth-quick-connect@bjarosze.gmail.com"
     [307]="dash-to-dock@micxgx.gmail.com"
+    [2087]="ding@rastersoft.com"
   )
   EXT_DIR="$HOME/.local/share/gnome-shell/extensions"
   mkdir -p "$EXT_DIR"
