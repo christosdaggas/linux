@@ -138,6 +138,10 @@ info "Enabling RPM Fusion Repositories..."
 sudo dnf install -y \
   https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
   https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
+  
+# ---------- Enable snap support -------------
+sudo dnf install -y snapd
+sudo ln -s /var/lib/snapd/snap /snap
 
 # ---------- Firmware Update --------
 info "Updating firmware..."
@@ -153,12 +157,12 @@ if ask_user "Install Cockpit (web-based system manager)?"; then
     sudo firewall-cmd --add-service=cockpit --permanent
     sudo firewall-cmd --reload
   fi
+  echo "Cockpit installation complete. You can access it at https://localhost:9090"
 fi
 
 # --------- GNOME Tweaks ----------
 if ask_user "Install GNOME Tweaks and configure UI?"; then
   install_if_missing gnome-tweaks gnome-extensions-app gnome-usage
-
   safe_gsettings_set org.gnome.desktop.interface enable-animations false
   safe_gsettings_set org.gtk.gtk4.Settings.FileChooser sort-directories-first true
   safe_gsettings_set org.gnome.desktop.wm.preferences button-layout ":minimize,maximize,close"
@@ -169,54 +173,12 @@ if ask_user "Install GNOME Tweaks and configure UI?"; then
   safe_gsettings_set org.gnome.nautilus.preferences recursive-search 'never'
   safe_gsettings_set org.gnome.mutter experimental-features "['scale-monitor-framebuffer']"
   safe_gsettings_set org.gnome.settings-daemon.plugins.color night-light-enabled true
-  # This key is removed in newer versions, safe_gsettings_set will skip it without error
   safe_gsettings_set org.gtk.Settings.FileChooser show-recent false
   safe_gsettings_set org.gnome.desktop.wm.preferences resize-with-right-button true
   safe_gsettings_set org.gnome.shell enable-hot-corner true
   safe_gsettings_set org.gnome.nautilus.preferences show-image-thumbnails 'always'
   safe_gsettings_set org.gnome.nautilus.preferences show-hidden-files true
   safe_gsettings_set org.gnome.nautilus.preferences always-use-location-entry true
-fi
-
-# --------- GNOME Shell extensions ----------
-if ask_user "Install GNOME Shell extensions?"; then
-  install_if_missing jq unzip gnome-extensions gnome-shell-extension-prefs || true
-  declare -A EXTENSIONS=(
-    [6]="applications-menu@gnome-shell-extensions.gcampax.github.com"
-    [19]="user-theme@gnome-shell-extensions.gcampax.github.com"
-    [3628]="arcmenu@arcmenu.com"
-    [3193]="blur-my-shell@aunetx"
-    [6807]="system-monitor@paradoxxx.zero.gmail.com"
-    [7]="drive-menu@gnome-shell-extensions.gcampax.github.com"
-    [779]="clipboard-indicator@tudmotu.com"
-    [1460]="Vitals@CoreCoding.com"
-    [8]="places-menu@gnome-shell-extensions.gcampax.github.com"
-    [1401]="bluetooth-quick-connect@bjarosze.gmail.com"
-    [307]="dash-to-dock@micxgx.gmail.com"
-  )
-  EXT_DIR="$HOME/.local/share/gnome-shell/extensions"
-  mkdir -p "$EXT_DIR"
-  SHELL_VERSION=$(gnome-shell --version | awk '{print $3}')
-  for ID in "${!EXTENSIONS[@]}"; do
-    UUID="${EXTENSIONS[$ID]}"
-    info "Installing Extension ID $ID ($UUID)..."
-    EXT_INFO=$(curl -s "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION")
-    EXT_URL=$(echo "$EXT_INFO" | jq -r '.download_url')
-    if [[ -z "$EXT_URL" || "$EXT_URL" == "null" ]]; then
-      warn "Skipping $UUID (not compatible or not found)."
-      continue
-    fi
-    TMP_ZIP="/tmp/$UUID.zip"
-    EXT_PATH="$EXT_DIR/$UUID"
-    curl -L -o "$TMP_ZIP" "https://extensions.gnome.org$EXT_URL"
-    unzip -o "$TMP_ZIP" -d "$EXT_PATH"
-    rm "$TMP_ZIP"
-    if [ -d "$EXT_PATH/schemas" ]; then
-      glib-compile-schemas "$EXT_PATH/schemas"
-    fi
-    gnome-extensions enable "$UUID" || warn "Could not enable $UUID"
-    info "Installed and enabled $UUID"
-  done
 fi
 
 # -------- Fedora GNOME User Experience Enhancements --------
@@ -262,14 +224,11 @@ if ask_user "Install Flatpak applications from Flathub?"; then
     org.gustavoperedo.FontDownloader
     io.github.flattool.Ignition
     com.usebottles.bottles
-    nl.emphisia.icon
     io.github.nokse22.Exhibit
     io.gitlab.news_flash.NewsFlash
     io.github.nate_xyz.Paleta
-    org.nickvision.money
     org.signal.Signal
     org.gnome.Papers
-    org.gnome.meld
     org.gnome.Extensions
     org.gnome.Firmware
     org.gnome.Calls
@@ -277,6 +236,47 @@ if ask_user "Install Flatpak applications from Flathub?"; then
   )
   for app in "${FLATPAK_APPS[@]}"; do
     flatpak install -y flathub "$app" || echo "⚠️ Failed to install $app"
+  done
+fi
+
+# --------- GNOME Shell extensions ----------
+if ask_user "Install GNOME Shell extensions?"; then
+  install_if_missing jq unzip gnome-extensions gnome-shell-extension-prefs || true
+  declare -A EXTENSIONS=(
+    [6]="applications-menu@gnome-shell-extensions.gcampax.github.com"
+    [19]="user-theme@gnome-shell-extensions.gcampax.github.com"
+    [3628]="arcmenu@arcmenu.com"
+    [3193]="blur-my-shell@aunetx"
+    [6807]="system-monitor@paradoxxx.zero.gmail.com"
+    [7]="drive-menu@gnome-shell-extensions.gcampax.github.com"
+    [779]="clipboard-indicator@tudmotu.com"
+    [1460]="Vitals@CoreCoding.com"
+    [8]="places-menu@gnome-shell-extensions.gcampax.github.com"
+    [1401]="bluetooth-quick-connect@bjarosze.gmail.com"
+    [307]="dash-to-dock@micxgx.gmail.com"
+  )
+  EXT_DIR="$HOME/.local/share/gnome-shell/extensions"
+  mkdir -p "$EXT_DIR"
+  SHELL_VERSION=$(gnome-shell --version | awk '{print $3}')
+  for ID in "${!EXTENSIONS[@]}"; do
+    UUID="${EXTENSIONS[$ID]}"
+    info "Installing Extension ID $ID ($UUID)..."
+    EXT_INFO=$(curl -s "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION")
+    EXT_URL=$(echo "$EXT_INFO" | jq -r '.download_url')
+    if [[ -z "$EXT_URL" || "$EXT_URL" == "null" ]]; then
+      warn "Skipping $UUID (not compatible or not found)."
+      continue
+    fi
+    TMP_ZIP="/tmp/$UUID.zip"
+    EXT_PATH="$EXT_DIR/$UUID"
+    curl -L -o "$TMP_ZIP" "https://extensions.gnome.org$EXT_URL"
+    unzip -o "$TMP_ZIP" -d "$EXT_PATH"
+    rm "$TMP_ZIP"
+    if [ -d "$EXT_PATH/schemas" ]; then
+      glib-compile-schemas "$EXT_PATH/schemas"
+    fi
+    gnome-extensions enable "$UUID" || warn "Could not enable $UUID"
+    info "Installed and enabled $UUID"
   done
 fi
 
@@ -320,7 +320,7 @@ if ask_user "Install Ollama and Alpaca GUI?"; then
 fi
 
 # --------- Extra Fonts ----------
-if ask_user "Install extra fonts (Powerline, Noto, JetBrains Mono, Microsoft fonts)?"; then
+if ask_user "Install extra fonts?"; then
   FONT_PACKAGES=(
     powerline-fonts fira-code-fonts mozilla-fira-sans-fonts
     liberation-sans-fonts liberation-serif-fonts liberation-mono-fonts
