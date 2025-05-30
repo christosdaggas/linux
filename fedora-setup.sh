@@ -1,239 +1,186 @@
 #!/bin/bash
-set -x
+set -eo pipefail
+shopt -s extglob
 
-# -------------------------------------------------
-# Fedora 41 Setup Script
-# -------------------------------------------------
+# ------------ Colors ---------------
+info() { echo -e "\e[36m[INFO]\e[0m $1"; }
+warn() { echo -e "\e[33m[WARN]\e[0m $1"; }
+error() { echo -e "\e[31m[ERROR]\e[0m $1"; }
 
-# -------------------------
-# Introduction & Options
-# -------------------------
-cat <<'EOF'
+# ------------ Prompt y/n -----------
+ask_user() {
+  local prompt="$1"
+  while true; do
+    read -rp "$(echo -e "\e[44m\e[1m$prompt [y/n]:\e[0m ")" reply
+    case "$reply" in
+      [Yy]) return 0 ;;
+      [Nn]) return 1 ;;
+      *) echo "Please enter y or n." ;;
+    esac
+  done
+}
 
-This script will assist you in setting up your Fedora 41+ workstation:
-  • Configure DNF for faster downloads & caching
-  • Change your system hostname
-  • Remove unwanted default apps and enable RPM Fusion repos
-  • Update firmware
-  • Install core system utilities
-  • Optional installs (you will be prompted):
-      – Cockpit web console
-      – GNOME Tweaks & behavior settings
-      – Productivity apps (Thunderbird, FileZilla, etc.)
-      – LibreOffice with EN/EL support
-      – Media applications (VLC, GIMP, Inkscape, Krita)
-      – Flatpak applications from Flathub
-      – AI tools: Ollama & Alpaca GUI
-      – Web & Coding Tools (VS Code, Chrome)
-      – Android Studio
-      – Extra fonts (Powerline, Noto, Fira, JetBrains Mono, etc.)
-      – Media codecs (libavcodec-freeworld)
-      – GNOME Shell extensions (Dash to Dock, ArcMenu, etc.)
-      – ClamAV antivirus & ClamTk GUI
-  • Final reboot prompt
+# --------- Install if Missing ------
+install_if_missing() {
+  local packages=("$@")
+  local to_install=()
+  for pkg in "${packages[@]}"; do
+    if ! rpm -q "$pkg" &>/dev/null; then
+      to_install+=("$pkg")
+    else
+      info "$pkg already installed."
+    fi
+  done
 
-Press any key to continue or Ctrl+C to abort...
-EOF
-read -n1 -s
+  if [ ${#to_install[@]} -gt 0 ]; then
+    info "Installing: ${to_install[*]}"
+    if ! sudo dnf install -y --skip-broken "${to_install[@]}"; then
+      warn "Some packages could not be installed and were skipped."
+    fi
+  fi
+}
 
-# -------------------------
-# Sudo Credential Caching
-# -------------------------
-echo -e "\e[44m\e[1mPlease enter your sudo password to start the setup:\e[0m"
-sudo -v || { echo "Error: Failed to obtain sudo privileges"; exit 1; }
-while true; do sudo -v; sleep 60; done &
-SUDO_PID=$!
-trap 'kill $SUDO_PID' EXIT
+# ---------- Safe gsettings Set ----------
+safe_gsettings_set() {
+  local schema="$1"
+  local key="$2"
+  local value="$3"
+  if gsettings writable "$schema" "$key" &>/dev/null; then
+    gsettings set "$schema" "$key" "$value"
+    info "Set $schema::$key to $value"
+  else
+    warn "gsettings key $schema::$key not found – skipped"
+  fi
+}
 
-# -------------------------
-# System Preparation
-# -------------------------
-sudo tee -a /etc/dnf/dnf.conf <<EOL
+# ----------- Optimize DNF ----------
+optimize_dnf() {
+  info "Optimizing DNF..."
+  sudo tee -a /etc/dnf/dnf.conf > /dev/null <<EOL
 fastestmirror=True
 max_parallel_downloads=10
 deltarpm=True
 keepcache=True
 EOL
+}
 
-# -------------------------
-# Enable SSD trimmer
-# -------------------------
-sudo systemctl enable --now fstrim.timer
+# ----------- Enable SSD TRIM -------
+enable_ssd_trim() {
+  info "Enabling SSD trim..."
+  sudo systemctl enable --now fstrim.timer
+}
 
-# -------------------------
-# Change hostname
-# -------------------------
-echo -e "\e[44m\e[1mEnter new hostname:\e[0m"
-read -r NEW_HOSTNAME
-echo "Changing hostname to $NEW_HOSTNAME..."
-sudo hostnamectl set-hostname "$NEW_HOSTNAME"
-sudo sed -i "s/127.0.1.1.*/127.0.1.1   $NEW_HOSTNAME/" /etc/hosts
-echo "Done! New hostname is $NEW_HOSTNAME"
+# ---------- Change Hostname --------
+change_hostname() {
+  read -rp "$(echo -e "\e[44m\e[1mEnter new hostname:\e[0m ")" NEW_HOSTNAME
+  info "Changing hostname to $NEW_HOSTNAME..."
+  sudo hostnamectl set-hostname "$NEW_HOSTNAME"
+  sudo sed -i "s/127.0.1.1.*/127.0.1.1   $NEW_HOSTNAME/" /etc/hosts || true
+}
 
-# -------------------------
-# Cleanup Unwanted Defaults
-# -------------------------
-sudo dnf remove -y evince rhythmbox abrt gnome-tour mediawriter
+# ---------- Initial Setup ----------
+clear
+info "Starting Fedora Workstation Setup"
+read -n1 -s -rp "Press any key to continue..."
+
+sudo -v
+while true; do sudo -v; sleep 60; done & SUDO_PID=$!
+trap 'kill $SUDO_PID' EXIT
+
+optimize_dnf
+enable_ssd_trim
+change_hostname
+
+# -------- Cleanup Unwanted Defaults --------
+info "Removing unwanted preinstalled applications..."
+UNWANTED_PACKAGES=(evince rhythmbox abrt gnome-tour mediawriter)
+sudo dnf remove -y "${UNWANTED_PACKAGES[@]}" || true
+
+info "Updating system packages..."
 sudo dnf update -y
 
-# -------------------------
-# Enable RPM Fusion repositories
-# -------------------------
+# ----------- Group Installs --------
+CORE_PACKAGES=(openssl curl fontconfig xorg-x11-font-utils dnf5 dnf5-plugins glib2 dnf-plugins-core)
+SECURITY_PACKAGES=(dnf-automatic fail2ban rkhunter lynis)
+TWEAK_PACKAGES=(gnome-color-manager zram-generator-defaults)
+PRODUCTIVITY_APPS=(filezilla flatseal decibels dconf-editor papers)
+
+# -------- Security Enhancements --------
+info "Installing security-related tools..."
+# sudo systemctl enable --now dnf-automatic.timer
+
+sudo firewall-cmd --set-default-zone=home || warn "Could not set firewall default zone"
+
+# Enable snapper if on btrfs root
+if mount | grep -q ' on / type btrfs'; then
+  info "Detected Btrfs root – enabling Snapper..."
+  install_if_missing snapper
+  if [ ! -e /etc/snapper/configs/root ]; then
+    sudo snapper -c root create-config /
+  else
+    info "Snapper config for root already exists. Skipping creation."
+  fi
+  sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer
+fi
+
+# SELinux status warning
+if [[ "$(getenforce)" != "Enforcing" ]]; then
+  warn "⚠️ SELinux is not in enforcing mode. Consider enabling it for better security."
+fi
+
+install_if_missing "${CORE_PACKAGES[@]}"
+install_if_missing "${SECURITY_PACKAGES[@]}"
+install_if_missing "${TWEAK_PACKAGES[@]}"
+install_if_missing "${PRODUCTIVITY_APPS[@]}"
+
+# ---------- RPM Fusion -------------
+info "Enabling RPM Fusion Repositories..."
 sudo dnf install -y \
   https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
   https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
 
-# -------------------------
-# Firmware updates
-# -------------------------
+# ---------- Firmware Update --------
+info "Updating firmware..."
 sudo fwupdmgr refresh --force
-sudo fwupdmgr get-updates
-sudo fwupdmgr update
+sudo fwupdmgr get-updates || true
+sudo fwupdmgr update || true
 
-# -------------------------
-# System Utilities
-# -------------------------
-sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins glib2
-
- # -------------------------
- # Security Enhancements
- # -------------------------
- sudo dnf install -y dnf-automatic
- sudo systemctl enable --now dnf-automatic.timer
- sudo firewall-cmd --set-default-zone=workstation
- sudo dnf install -y fail2ban rkhunter lynis
- 
- if mount | grep -q ' on / type btrfs'; then
-  sudo dnf install -y snapper
-  sudo snapper -c root create-config /
-  sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer
- fi
- 
- if [[ "$(getenforce)" != "Enforcing" ]]; then
-  echo "Warning: SELinux is not in enforcing mode."
- fi
- 
-
- # -------------------------
- # User-Experience Tweaks
- # -------------------------
- sudo systemctl enable --now fstrim.timer
- sudo dnf install -y gnome-color-manager
- sudo dnf install -y pavucontrol helvum
- sudo systemctl enable --now systemd-readahead-collect systemd-readahead-replay
- echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swappiness.conf
- sudo sysctl --system
- sudo dnf install -y zram-generator-defaults
- sudo systemctl enable --now systemd-zram-setup@zram0
-
-# -------------------------
-# Optional: Cockpit Web Console
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install Cockpit (web-based system manager)? [y/N]:\e[0m"
-read -r INSTALL_COCKPIT
-if [[ "$INSTALL_COCKPIT" =~ ^[Yy]$ ]]; then
-  echo "Installing Cockpit..."
-  sudo bash <<'EOF'
-dnf install -y cockpit
-systemctl enable --now cockpit.socket
-if systemctl is-active --quiet firewalld; then
-  firewall-cmd --add-service=cockpit --permanent
-  firewall-cmd --reload
-fi
-echo "Cockpit installation complete. Access at https://localhost:9090"
-EOF
-else
-  echo "Skipping Cockpit installation."
+# --------- Cockpit (web-based system manager) ----------
+if ask_user "Install Cockpit (web-based system manager)?"; then
+  install_if_missing cockpit
+  sudo systemctl enable --now cockpit.socket
+  if systemctl is-active --quiet firewalld; then
+    sudo firewall-cmd --add-service=cockpit --permanent
+    sudo firewall-cmd --reload
+  fi
 fi
 
-# -------------------------
-# Optional: GNOME Tweaks & Behavior
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to configure GNOME Tweaks & Behavior? [y/N]:\e[0m"
-read -r INSTALL_GNOME_TWEAKS
-if [[ "$INSTALL_GNOME_TWEAKS" =~ ^[Yy]$ ]]; then
-  echo "Installing and configuring GNOME Tweaks..."
-  sudo dnf install -y gnome-tweaks gnome-extensions-app gnome-calendar gnome-usage
-  gsettings set org.gnome.desktop.interface enable-animations false
-  gsettings set org.gtk.gtk4.Settings.FileChooser sort-directories-first true
-  gsettings set org.gnome.desktop.wm.preferences button-layout ":minimize,maximize,close"
-  gsettings set org.gnome.desktop.wm.keybindings switch-windows "['<Alt>Tab']"
-  gsettings set org.gnome.desktop.wm.keybindings switch-applications "['<Super>Tab']"
-  gsettings set org.gnome.desktop.wm.keybindings switch-windows-backward "['<Shift><Alt>Tab']"
-  gsettings set org.gnome.desktop.wm.keybindings switch-applications-backward "['<Shift><Super>Tab']"
-  gsettings set org.gnome.nautilus.preferences recursive-search 'never'
-  gsettings set org.gnome.mutter experimental-features "['scale-monitor-framebuffer']"
-  gsettings set org.gnome.settings-daemon.plugins.color night-light-enabled true
-  gsettings set org.gtk.Settings.FileChooser show-recent false
-  gsettings set org.gnome.desktop.wm.preferences resize-with-right-button true
-  gsettings set org.gnome.shell enable-hot-corner true
-  gsettings set org.gnome.nautilus.preferences show-image-thumbnails 'always'
-  gsettings set org.gnome.nautilus.preferences show-hidden-files true
-  gsettings set org.gnome.nautilus.preferences always-use-location-entry true
-else
-  echo "Skipping GNOME Tweaks & Behavior."
+# --------- GNOME Tweaks ----------
+if ask_user "Install GNOME Tweaks and configure UI?"; then
+  install_if_missing gnome-tweaks gnome-extensions-app gnome-usage
+
+  safe_gsettings_set org.gnome.desktop.interface enable-animations false
+  safe_gsettings_set org.gtk.gtk4.Settings.FileChooser sort-directories-first true
+  safe_gsettings_set org.gnome.desktop.wm.preferences button-layout ":minimize,maximize,close"
+  safe_gsettings_set org.gnome.desktop.wm.keybindings switch-windows "['<Alt>Tab']"
+  safe_gsettings_set org.gnome.desktop.wm.keybindings switch-applications "['<Super>Tab']"
+  safe_gsettings_set org.gnome.desktop.wm.keybindings switch-windows-backward "['<Shift><Alt>Tab']"
+  safe_gsettings_set org.gnome.desktop.wm.keybindings switch-applications-backward "['<Shift><Super>Tab']"
+  safe_gsettings_set org.gnome.nautilus.preferences recursive-search 'never'
+  safe_gsettings_set org.gnome.mutter experimental-features "['scale-monitor-framebuffer']"
+  safe_gsettings_set org.gnome.settings-daemon.plugins.color night-light-enabled true
+  # This key is removed in newer versions, safe_gsettings_set will skip it without error
+  safe_gsettings_set org.gtk.Settings.FileChooser show-recent false
+  safe_gsettings_set org.gnome.desktop.wm.preferences resize-with-right-button true
+  safe_gsettings_set org.gnome.shell enable-hot-corner true
+  safe_gsettings_set org.gnome.nautilus.preferences show-image-thumbnails 'always'
+  safe_gsettings_set org.gnome.nautilus.preferences show-hidden-files true
+  safe_gsettings_set org.gnome.nautilus.preferences always-use-location-entry true
 fi
 
-# -------------------------
-# Productivity Applications
-# -------------------------
-sudo dnf install -y thunderbird filezilla flatseal decibels dconf-editor papers
-
-# -------------------------
-# Optional: LibreOffice Suite
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install LibreOffice with English and Greek support? [y/N]:\e[0m"
-read -r INSTALL_LIBREOFFICE
-if [[ "$INSTALL_LIBREOFFICE" =~ ^[Yy]$ ]]; then
-  echo "Installing LibreOffice..."
-  sudo dnf install -y libreoffice libreoffice-langpack-el libreoffice-langpack-en
-else
-  echo "Skipping LibreOffice."
-fi
-
-# -------------------------
-# Optional: Media Applications
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install media applications (VLC, GIMP, Inkscape, Krita)? [y/N]:\e[0m"
-read -r INSTALL_MEDIA_APPS
-if [[ "$INSTALL_MEDIA_APPS" =~ ^[Yy]$ ]]; then
-  sudo dnf install -y vlc gimp inkscape krita
-else
-  echo "Skipping media applications."
-fi
-
-# -------------------------
-# Optional: Applications (Flatpak)
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install Flatpak applications from Flathub? [y/N]:\e[0m"
-read -r INSTALL_FLATPAK_APPS
-if [[ "$INSTALL_FLATPAK_APPS" =~ ^[Yy]$ ]]; then
-  flatpak install -y flathub \
-    com.mattjakeman.ExtensionManager \
-    io.github.realmazharhussain.GdmSettings \
-    io.github.flattool.Warehouse \
-    org.gustavoperedo.FontDownloader \
-    com.usebottles.bottles \
-    org.gnome.Firmware \
-    org.gnome.Calls \
-    org.gnome.World.PikaBackup \
-    io.github.nokse22.Exhibit \
-    io.gitlab.news_flash.NewsFlash \
-    org.nickvision.money \
-    org.signal.Signal \
-    md.obsidian.Obsidian \
-    org.gnome.Papers
-else
-  echo "Skipping Flatpak applications."
-fi
-
-# -------------------------
-# Optional: GNOME Shell Extensions
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install GNOME Shell extensions? [y/N]:\e[0m"
-read -r INSTALL_EXTENSIONS
-if [[ "$INSTALL_EXTENSIONS" =~ ^[Yy]$ ]]; then
-  sudo dnf install -y jq curl unzip gnome-extensions gnome-shell-extension-prefs
+# --------- GNOME Shell extensions ----------
+if ask_user "Install GNOME Shell extensions?"; then
+  install_if_missing jq unzip gnome-extensions gnome-shell-extension-prefs || true
   declare -A EXTENSIONS=(
     [6]="applications-menu@gnome-shell-extensions.gcampax.github.com"
     [19]="user-theme@gnome-shell-extensions.gcampax.github.com"
@@ -252,11 +199,11 @@ if [[ "$INSTALL_EXTENSIONS" =~ ^[Yy]$ ]]; then
   SHELL_VERSION=$(gnome-shell --version | awk '{print $3}')
   for ID in "${!EXTENSIONS[@]}"; do
     UUID="${EXTENSIONS[$ID]}"
-    echo -e "\u27A1\uFE0F Installing Extension ID $ID ($UUID)..."
+    info "Installing Extension ID $ID ($UUID)..."
     EXT_INFO=$(curl -s "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION")
     EXT_URL=$(echo "$EXT_INFO" | jq -r '.download_url')
     if [[ -z "$EXT_URL" || "$EXT_URL" == "null" ]]; then
-      echo -e "\u274C Skipping $UUID (not compatible or not found)."
+      warn "Skipping $UUID (not compatible or not found)."
       continue
     fi
     TMP_ZIP="/tmp/$UUID.zip"
@@ -264,34 +211,79 @@ if [[ "$INSTALL_EXTENSIONS" =~ ^[Yy]$ ]]; then
     curl -L -o "$TMP_ZIP" "https://extensions.gnome.org$EXT_URL"
     unzip -o "$TMP_ZIP" -d "$EXT_PATH"
     rm "$TMP_ZIP"
-    if [ -d "$EXT_PATH/schemas" ]; then glib-compile-schemas "$EXT_PATH/schemas"; fi
-    gnome-extensions enable "$UUID" || echo -e "\u26A0\uFE0F Could not enable $UUID"
-    echo -e "\u2705 Installed and enabled $UUID"
+    if [ -d "$EXT_PATH/schemas" ]; then
+      glib-compile-schemas "$EXT_PATH/schemas"
+    fi
+    gnome-extensions enable "$UUID" || warn "Could not enable $UUID"
+    info "Installed and enabled $UUID"
   done
-else
-  echo "Skipping GNOME Shell extensions."
 fi
 
-# -------------------------
-# Optional: AI Tools – Ollama
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install Ollama (and Alpaca GUI)? [y/N]:\e[0m"
-read -r INSTALL_OLLAMA
-if [[ "$INSTALL_OLLAMA" =~ ^[Yy]$ ]]; then
-  curl -fsSL https://ollama.com/install.sh | sh
-  flatpak install -y flathub com.jeffser.Alpaca
-else
-  echo "Skipping Ollama & Alpaca."
+# -------- Fedora GNOME User Experience Enhancements --------
+if ask_user "Enhance Fedora GNOME experience (ZSH, Dark mode, Clipboard, AppImage support, etc.)?"; then
+  info "Enhancing GNOME user experience..."
+  # CLI Boost: fzf, bat, ripgrep
+  install_if_missing fzf bat ripgrep
+  # Flatpak auto-update
+  systemctl --user enable --now flatpak-system-update.timer || true
+  # Enable Vitals extension if already installed
+  if gnome-extensions list | grep -q Vitals@CoreCoding.com; then
+    gnome-extensions enable Vitals@CoreCoding.com || true
+  fi
+  # USBGuard (block unauthorized USB devices)
+  if ask_user "Install USBGuard to protect against unauthorized USB devices?"; then
+    install_if_missing usbguard
+    sudo systemctl enable --now usbguard.service
+  fi
 fi
 
-# -------------------------
-# Optional: Web & Coding Tools
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install Web & Coding Tools (VS Code & Chrome)? [y/N]:\e[0m"
-read -r INSTALL_WEB_CODING
-if [[ "$INSTALL_WEB_CODING" =~ ^[Yy]$ ]]; then
+# -------- LibreOffice Suite --------
+if ask_user "Install LibreOffice with English and Greek support?"; then
+  install_if_missing libreoffice libreoffice-langpack-en libreoffice-langpack-el
+fi
+
+# -------- Design Applications -------
+if ask_user "Install design applications (GIMP, Inkscape)?"; then
+  MEDIA_APPS=(gimp inkscape)
+  install_if_missing "${MEDIA_APPS[@]}"
+fi
+
+# --------- Flatpak Applications ----------
+if ask_user "Install Flatpak applications from Flathub?"; then
+  if ! command -v flatpak &>/dev/null; then
+    info "Flatpak not found. Installing..."
+    sudo dnf install -y flatpak
+  fi
+  flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+  FLATPAK_APPS=(
+    com.mattjakeman.ExtensionManager
+    io.github.realmazharhussain.GdmSettings
+    io.github.flattool.Warehouse
+    org.gustavoperedo.FontDownloader
+    io.github.flattool.Ignition
+    com.usebottles.bottles
+    nl.emphisia.icon
+    io.github.nokse22.Exhibit
+    io.gitlab.news_flash.NewsFlash
+    io.github.nate_xyz.Paleta
+    org.nickvision.money
+    org.signal.Signal
+    org.gnome.Papers
+    org.gnome.meld
+    org.gnome.Extensions
+    org.gnome.Firmware
+    org.gnome.Calls
+    org.gnome.World.PikaBackup
+  )
+  for app in "${FLATPAK_APPS[@]}"; do
+    flatpak install -y flathub "$app" || echo "⚠️ Failed to install $app"
+  done
+fi
+
+# --------- VS Code and Google Chrome ----------
+if ask_user "Install VS Code and Google Chrome?"; then
   sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
-  sudo tee /etc/yum.repos.d/vscode.repo <<EOL
+  sudo tee /etc/yum.repos.d/vscode.repo > /dev/null <<EOL
 [code]
 name=Visual Studio Code
 baseurl=https://packages.microsoft.com/yumrepos/vscode
@@ -299,51 +291,84 @@ enabled=1
 gpgcheck=1
 gpgkey=https://packages.microsoft.com/keys/microsoft.asc
 EOL
-  sudo dnf check-update
-  sudo dnf install -y code
-  sudo dnf install -y fedora-workstation-repositories
-  sudo dnf config-manager --set-enabled google-chrome
-  sudo dnf install -y google-chrome-stable
-else
-  echo "Skipping VS Code & Chrome."
+  sudo dnf check-update || true
+  install_if_missing code
+  sudo dnf install -y fedora-workstation-repositories dnf-plugins-core
+if ! sudo dnf config-manager --set-enabled google-chrome; then
+  warn "dnf config-manager --set-enabled not supported, enabling google-chrome repo manually"
+  sudo sed -i 's/enabled=0/enabled=1/' /etc/yum.repos.d/google-chrome.repo
+fi
+  install_if_missing google-chrome-stable
 fi
 
-# -------------------------
-# Optional: Android Studio
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install Android Studio? [y/N]:\e[0m"
-read -r INSTALL_ANDROID_STUDIO
-if [[ "$INSTALL_ANDROID_STUDIO" =~ ^[Yy]$ ]]; then
+# --------- Android Studio ----------
+if ask_user "Install Android Studio?"; then
   flatpak install -y flathub com.google.AndroidStudio
-else
-  echo "Skipping Android Studio."
 fi
 
-# -------------------------
-# Optional: Extra Fonts
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install extra fonts? [y/N]:\e[0m"
-read -r INSTALL_EXTRA_FONTS
-if [[ "$INSTALL_EXTRA_FONTS" =~ ^[Yy]$ ]]; then
-  sudo dnf install -y powerline-fonts
-  wget -P /usr/share/fonts/ \
+# --------- AI Tools: Ollama & Alpaca GUI ----------
+if ask_user "Install Ollama and Alpaca GUI?"; then
+  OLLAMA_BIN="/usr/local/bin/ollama"
+  if [[ ! -x "$OLLAMA_BIN" ]]; then
+    curl -fsSL https://ollama.com/install.sh -o /tmp/ollama-install.sh
+    bash /tmp/ollama-install.sh || echo "⚠️ Ollama installation failed"
+  else
+    info "Ollama already installed. Skipping..."
+  fi
+
+  flatpak install -y flathub com.jeffser.Alpaca || echo "⚠️ Failed to install Alpaca GUI"
+fi
+
+# --------- Extra Fonts ----------
+if ask_user "Install extra fonts (Powerline, Noto, JetBrains Mono, Microsoft fonts)?"; then
+  FONT_PACKAGES=(
+    powerline-fonts fira-code-fonts mozilla-fira-sans-fonts
+    liberation-sans-fonts liberation-serif-fonts liberation-mono-fonts
+    google-noto-sans-fonts google-noto-serif-fonts google-noto-mono-fonts
+    google-roboto-fonts jetbrains-mono-fonts rsms-inter-fonts
+  )
+  install_if_missing "${FONT_PACKAGES[@]}"
+
+  # MesloLGS NF for powerlevel10k (manually download and install)
+  sudo wget -q -P /usr/share/fonts/ \
     https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Regular.ttf \
     https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold.ttf \
     https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Italic.ttf \
     https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf
+
   sudo fc-cache -fv
-  sudo dnf copr enable --assumeyes atim/ubuntu-fonts
-  sudo dnf install -y \
-    rsms-inter-fonts \
-    ubuntu-family-fonts \
-    dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts \
-    liberation-sans-fonts liberation-serif-fonts liberation-mono-fonts \
-    google-noto-sans-fonts google-noto-serif-fonts google-noto-mono-fonts \
-    fira-code-fonts mozilla-fira-sans-fonts google-roboto-fonts \
-    jetbrains-mono-fonts
-  wget https://downloads.sourceforge.net/project/mscorefonts2/rpms/msttcore-fonts-installer-2.6-1.noarch.rpm \
-    -O /tmp/msfonts.rpm
-  sudo dnf install -y /tmp/msfonts.rpm
+
+  # Install Microsoft Core Fonts (no COPR, use direct rpm)
+install_msttcore_fonts() {
+  local MSCORE_RPM="/tmp/msttcore-fonts-installer-2.6-1.noarch.rpm"
+  local MAX_RETRIES=5
+  local attempt=1
+
+  install_if_missing cabextract
+
+  while (( attempt <= MAX_RETRIES )); do
+    info "Downloading msttcore fonts installer (attempt $attempt)..."
+    wget -q https://downloads.sourceforge.net/project/mscorefonts2/rpms/msttcore-fonts-installer-2.6-1.noarch.rpm -O "$MSCORE_RPM"
+    if [[ -f "$MSCORE_RPM" ]]; then
+      if sudo rpm -i --nosignature "$MSCORE_RPM"; then
+        info "msttcore fonts installed successfully."
+        break
+      else
+        warn "msttcore fonts installation failed on attempt $attempt."
+      fi
+    else
+      warn "Could not download msttcore fonts installer on attempt $attempt."
+    fi
+    ((attempt++))
+    sleep 5
+  done
+
+  if (( attempt > MAX_RETRIES )); then
+    warn "Failed to install msttcore fonts after $MAX_RETRIES attempts. Skipping."
+  fi
+}
+
+  # Font rendering tweaks
   mkdir -p ~/.config/fontconfig
   cat <<EOL > ~/.config/fontconfig/fonts.conf
 <?xml version="1.0"?>
@@ -357,54 +382,29 @@ if [[ "$INSTALL_EXTRA_FONTS" =~ ^[Yy]$ ]]; then
   </match>
 </fontconfig>
 EOL
-else
-  echo "Skipping extra fonts."
 fi
 
-# -------------------------
-# Optional: Media Codecs
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install media codecs? [y/N]:\e[0m"
-read -r INSTALL_MEDIA_CODECS
-if [[ "$INSTALL_MEDIA_CODECS" =~ ^[Yy]$ ]]; then
-  sudo dnf install -y libavcodec-freeworld
-else
-  echo "Skipping media codecs."
+# --------- Media Codecs ------------
+if ask_user "Install media codecs (libavcodec-freeworld)?"; then
+  install_if_missing libavcodec-freeworld
 fi
 
-# -------------------------
-# Optional: ClamAV Antivirus
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install ClamAV antivirus? [y/N]:\e[0m"
-read -r INSTALL_CLAMAV
-if [[ "$INSTALL_CLAMAV" =~ ^[Yy]$ ]]; then
-  sudo dnf install -y clamav clamav-update
-  sudo freshclam
+# -------- Antivirus Tools ----------
+if ask_user "Install ClamAV Antivirus?"; then
+  install_if_missing clamav clamav-update
+  sudo freshclam || true
   sudo systemctl enable --now clamav-freshclam
-else
-  echo "Skipping ClamAV."
 fi
 
-# -------------------------
-# Optional: ClamTk GUI for ClamAV
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install ClamTk (GUI for ClamAV)? [y/N]:\e[0m"
-read -r INSTALL_CLAMTK
-if [[ "$INSTALL_CLAMTK" =~ ^[Yy]$ ]]; then
-  sudo dnf install -y clamtk
-else
-  echo "Skipping ClamTk."
+if ask_user "Install ClamTk GUI for ClamAV?"; then
+  install_if_missing clamtk
 fi
 
-# -------------------------
-# Final Reboot
-# -------------------------
-echo -e "\e[44m\e[1m\u2705 Fedora 41 setup completed. Reboot recommended. Reboot now? [y/N]:\e[0m"
-read -r RESPONSE
-if [[ "$RESPONSE" =~ ^[Yy]$ ]]; then
-    echo "Rebooting..."
-    sleep 2
-    reboot
+# ------------ Final Prompt ---------
+if ask_user "✅ Fedora 41 setup completed. Reboot now?"; then
+  info "Rebooting..."
+  sleep 2
+  reboot
 else
-    echo "Reboot skipped."
+  info "Reboot skipped."
 fi
