@@ -107,8 +107,8 @@ PRODUCTIVITY_APPS=(filezilla flatseal decibels dconf-editor papers)
 
 # -------- Security Enhancements --------
 info "Installing security-related tools..."
-# sudo systemctl enable --now dnf-automatic.timer
 
+# sudo systemctl enable --now dnf-automatic.timer
 sudo firewall-cmd --set-default-zone=home || warn "Could not set firewall default zone"
 
 # Enable snapper if on btrfs root
@@ -229,10 +229,11 @@ if ask_user "Install Flatpak applications from Flathub?"; then
     io.github.nate_xyz.Paleta
     org.signal.Signal
     org.gnome.Papers
-    org.gnome.Extensions
     org.gnome.Firmware
     org.gnome.Calls
     org.gnome.World.PikaBackup
+    com.rustdesk.RustDesk
+    com.anydesk.Anydesk
   )
   for app in "${FLATPAK_APPS[@]}"; do
     flatpak install -y flathub "$app" || echo "⚠️ Failed to install $app"
@@ -402,7 +403,7 @@ if ask_user "Install ClamTk GUI for ClamAV?"; then
 fi
 
 # ------------ Final Prompt ---------
-if ask_user "✅ Fedora 41 setup completed. Reboot now?"; then
+if ask_user "Fedora setup completed. Reboot now?"; then
   info "Rebooting..."
   sleep 2
   reboot
