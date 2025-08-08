@@ -1,249 +1,214 @@
-#!/bin/bash
-set -x
-# -------------------------------------------------
-# Fedora Setup Script
-# -------------------------------------------------
-# -------------------------
-# Sudo Credential Caching
-# -------------------------
-echo -e "\e[44m\e[1mPlease enter your sudo password to start the setup:\e[0m"
-sudo -v || { echo "Error: Failed to obtain sudo privileges"; exit 1; }
-while true; do
-    sudo -v
-    sleep 60
-done &
-SUDO_PID=$!
-trap 'kill $SUDO_PID' EXIT
-# -------------------------
-# System Preparation
-# -------------------------
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=== Fedora KDE Ultimate Setup ==="
+
+# ==================================================
+# 0. CONFIG
+# ==================================================
+COLOR_SCHEME="BreezeDark"
+ICON_THEME="breeze-dark"
+CURSOR_THEME="Breeze_Snow"
+UI_FONT="Noto Sans,10,-1,5,50,0,0,0,0,0"
+MONO_FONT="JetBrains Mono,10,-1,5,50,0,0,0,0,0"
+TERMINAL_PROFILE_NAME="CleanDark"
+TERMINAL_FONT="JetBrains Mono 11"
+DEFAULT_LANG="en_US.UTF-8"    # Change to el_GR.UTF-8 for full Greek UI
+XKB_LAYOUTS="us,gr"
+XKB_OPTIONS="grp:alt_shift_toggle"
+
+KWRITE="$(command -v kwriteconfig6 || command -v kwriteconfig5 || true)"
+KQUIT="$(command -v kquitapp6 || command -v kquitapp5 || true)"
+KSTART="$(command -v kstart6 || command -v kstart5 || true)"
+
+# ==================================================
+# 1. DNF OPTIMIZATION
+# ==================================================
+echo "[1] Optimizing DNF..."
 sudo tee -a /etc/dnf/dnf.conf <<EOL
 fastestmirror=True
 max_parallel_downloads=10
 deltarpm=True
 keepcache=True
 EOL
-# -------------------------
-# Change hostname
-# -------------------------
-echo -e "\e[44m\e[1mEnter new hostname:\e[0m"
-read -r NEW_HOSTNAME
-echo "Changing hostname to $NEW_HOSTNAME..."
-sudo hostnamectl set-hostname "$NEW_HOSTNAME"
-sudo sed -i "s/127.0.1.1.*/127.0.1.1   $NEW_HOSTNAME/" /etc/hosts
-echo "Done! New hostname is $NEW_HOSTNAME"
-# -------------------------
-# Cleanup Unwanted Defaults
-# -------------------------
-sudo dnf remove -y evince mediawriter
-sudo dnf update -y
-# Enable RPM Fusion repositories
+
+# ==================================================
+# 2. REMOVE KDE DEFAULT & EXTRA APPS
+# ==================================================
+echo "[2] Removing KDE & extra apps..."
+REMOVE_PKGS=(
+  akregator dragon juk kaddressbook kalarm kamera kcalc kcharselect kcolorchooser
+  kdenlive khelpcenter kmail kmousetool knotes kolourpaint konversation korganizer
+  krdc krfb ktnef skanlite sweeper gwenview elisa-player elisa okular kwrite
+  kmahjongg kmines kpat plasma-welcome neochat kamoso qrca mediawriter
+)
+sudo dnf remove -y --noautoremove "${REMOVE_PKGS[@]}" 2>/dev/null || true
+sudo dnf autoremove -y || true
+
+# ==================================================
+# 3. GREEK LANGUAGE SUPPORT
+# ==================================================
+echo "[3] Installing Greek language packs..."
+sudo dnf install -y glibc-langpack-el langpacks-el \
+  google-noto-sans-fonts google-noto-serif-fonts google-noto-mono-fonts \
+  ibus ibus-gtk ibus-qt || true
+
+mkdir -p "$HOME/.config"
+cat > "$HOME/.config/kxkbrc" <<EOF
+[Layout]
+LayoutList=$XKB_LAYOUTS
+Options=$XKB_OPTIONS
+ResetOldOptions=true
+SwitchMode=Global
+Use=true
+EOF
+sudo localectl set-x11-keymap "$(echo "$XKB_LAYOUTS" | cut -d, -f1)","$(echo "$XKB_LAYOUTS" | cut -d, -f2)" "" "" "$XKB_OPTIONS" || true
+sudo localectl set-locale "LANG=$DEFAULT_LANG" || true
+
+# ==================================================
+# 4. FONT RENDERING
+# ==================================================
+echo "[4] Optimizing font rendering..."
+mkdir -p ~/.config/fontconfig
+cat > ~/.config/fontconfig/fonts.conf <<'EOF'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+ <match target="font">
+  <edit name="hinting" mode="assign"><bool>true</bool></edit>
+  <edit name="antialias" mode="assign"><bool>true</bool></edit>
+  <edit name="rgba" mode="assign"><const>rgb</const></edit>
+  <edit name="hintstyle" mode="assign"><const>hintfull</const></edit>
+ </match>
+</fontconfig>
+EOF
+
+# ==================================================
+# 5. KDE UI TWEAKS
+# ==================================================
+echo "[5] Applying KDE UI tweaks..."
+if [[ -n "$KWRITE" ]]; then
+  $KWRITE --file "$HOME/.config/kdeglobals" --group "General" --key "ColorScheme" "$COLOR_SCHEME"
+  $KWRITE --file "$HOME/.config/kdeglobals" --group "Icons" --key "Theme" "$ICON_THEME"
+  $KWRITE --file "$HOME/.config/kdeglobals" --group "General" --key "font" "$UI_FONT"
+  $KWRITE --file "$HOME/.config/kdeglobals" --group "General" --key "fixed" "$MONO_FONT"
+  $KWRITE --file "$HOME/.config/kdeglobals" --group "KDE" --key "SingleClick" "true"
+fi
+$KWRITE --file "$HOME/.config/dolphinrc" --group "General" --key "ShowFullPathInTitlebar" "true"
+$KWRITE --file "$HOME/.config/dolphinrc" --group "General" --key "ShowHiddenFiles" "true"
+$KWRITE --file "$HOME/.config/dolphinrc" --group "General" --key "PreviewsShown" "false"
+$KWRITE --file "$HOME/.config/kwinrc" --group "Plugins" --key "blurEnabled" "true"
+$KWRITE --file "$HOME/.config/kwinrc" --group "NightColor" --key "Active" "true"
+$KWRITE --file "$HOME/.config/kwinrc" --group "NightColor" --key "Mode" "Automatic"
+mkdir -p "$HOME/Pictures/Screenshots"
+$KWRITE --file "$HOME/.config/spectaclerc" --group "General" --key "defaultSaveLocation" "$HOME/Pictures/Screenshots"
+$KWRITE --file "$HOME/.config/spectaclerc" --group "General" --key "autoSaveImage" "true"
+$KWRITE --file "$HOME/.config/spectaclerc" --group "General" --key "copyImageToClipboard" "true"
+
+# ==================================================
+# 6. PANEL TWEAKS
+# ==================================================
+echo "[6] Tweaking panel..."
+PANEL_CFG="$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc"
+if [[ -f "$PANEL_CFG" ]]; then
+  sed -i 's/plugin=org.kde.panel/position=bottom\nplugin=org.kde.panel/' "$PANEL_CFG"
+  sed -i 's/thickness=.*/thickness=35/' "$PANEL_CFG"
+  grep -q "floating=false" "$PANEL_CFG" || echo "floating=false" >> "$PANEL_CFG"
+fi
+
+# ==================================================
+# 7. SPEED BOOST
+# ==================================================
+echo "[7] Disabling animations & indexing..."
+$KWRITE --file "$HOME/.config/kwinrc" --group "Compositing" --key "AnimationsEnabled" "false"
+$KWRITE --file "$HOME/.config/kdeglobals" --group "KDE" --key "GraphicEffectsLevel" "0"
+balooctl disable || true
+$KWRITE --file "$HOME/.config/baloofilerc" --group "Basic Settings" --key "Indexing-Enabled" "false"
+
+# ==================================================
+# 8. SECURITY
+# ==================================================
+echo "[8] Installing security tools..."
+sudo dnf install -y fail2ban rkhunter lynis setools-console policycoreutils-python-utils
+sudo systemctl enable --now firewalld
+sudo firewall-cmd --set-default-zone=public
+sudo dnf install -y dnf-automatic
+sudo systemctl enable --now dnf-automatic.timer
+
+# ==================================================
+# 9. SYSTEM PERFORMANCE
+# ==================================================
+echo "[9] System tuning..."
+echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swappiness.conf
+sudo sysctl --system
+sudo dnf install -y zram-generator-defaults
+sudo systemctl enable --now systemd-zram-setup@zram0
+sudo systemctl enable --now fstrim.timer
+
+# ==================================================
+# 10. DEV & PRODUCTIVITY TOOLS
+# ==================================================
+echo "[10] Installing dev/productivity tools..."
+sudo dnf install -y git curl vim htop ncdu unzip p7zip p7zip-plugins unrar \
+  fwupd bash-completion flatpak
+
+# ==================================================
+# 11. MULTIMEDIA & RPM FUSION
+# ==================================================
+echo "[11] Enabling RPM Fusion & multimedia..."
 sudo dnf install -y \
   https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
   https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
-# Firmware updates
-sudo fwupdmgr refresh --force
-sudo fwupdmgr get-updates
-sudo fwupdmgr update
-# -------------------------
-# System Utilities
-# -------------------------
-sudo dnf install -y openssl curl cabextract xorg-x11-font-utils fontconfig dnf5 dnf5-plugins glib2 flatpak
-sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+sudo dnf groupinstall -y "Multimedia" "Sound and Video"
+sudo dnf install -y ffmpeg-libs
 
-# -------------------------
-# Optional: Install Cockpit Web Console
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install Cockpit (web-based system manager)? [y/N]:\e[0m"
-read -r INSTALL_COCKPIT
-if [[ "$INSTALL_COCKPIT" =~ ^[Yy]$ ]]; then
-  echo "Installing Cockpit..."
-  sudo dnf install -y cockpit
-  sudo systemctl enable --now cockpit.socket
-  if systemctl is-active --quiet firewalld; then
-    sudo firewall-cmd --add-service=cockpit --permanent
-    sudo firewall-cmd --reload
-  fi
-else
-  echo "Skipping Cockpit installation."
-fi
-# -------------------------
-# Optional: LibreOffice Suite
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install LibreOffice with English and Greek language support? [y/N]:\e[0m"
-read -r INSTALL_LIBREOFFICE
-if [[ "$INSTALL_LIBREOFFICE" =~ ^[Yy]$ ]]; then
-  sudo dnf install -y libreoffice libreoffice-langpack-el libreoffice-langpack-en
-else
-  echo "Skipping LibreOffice installation."
-fi
-# -------------------------
-# Optional: Media Applications
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install media applications (VLC, GIMP, Inkscape, Krita)? [y/N]:\e[0m"
-read -r INSTALL_MEDIA_APPS
-if [[ "$INSTALL_MEDIA_APPS" =~ ^[Yy]$ ]]; then
-  sudo dnf install -y vlc gimp inkscape krita
-else
-  echo "Skipping media applications installation."
-fi
-# -------------------------
-# KDE Animation Removal (if KDE is detected)
-# -------------------------
-if [[ "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
-  echo -e "\e[42mDetected KDE Plasma environment. Disabling all animations...\e[0m"
-  CONFIG_FILE="$HOME/.config/kwinrc"
-  cp "$CONFIG_FILE" "$CONFIG_FILE.bak.$(date +%s)"
-  kwriteconfig5 --file kwinrc --group Compositing --key AnimationSpeed "0.0"
-  kwriteconfig5 --file kwinrc --group Compositing --key Enabled "false"
-  kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_maximizeEnabled false
-  kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_fadeEnabled false
-  kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_dialogparentEnabled false
-  kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_loginEnabled false
-  kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_logoutEnabled false
-  kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_minimizeanimationEnabled false
-  kwriteconfig5 --file kdeglobals --group KDE --key GraphicEffectsLevel "0"
-  qdbus org.kde.KWin /KWin reconfigure
-  kwin_x11 --replace & disown
-  echo "✅ KDE animations disabled. Log out and back in for full effect."
-  echo -e "\e[44m\e[1mApplying KDE advanced tweaks...\e[0m"
-  kwriteconfig5 --file kwinrc --group Compositing --key LatencyPolicy "LowLatency"
-  kwriteconfig5 --file kwinrc --group Plugins --key kwin4_effect_blurEnabled false
-  kwriteconfig5 --file baloofilerc --group Basic\ Settings --key IndexingEnabled false
-  balooctl disable
-  kwriteconfig5 --file kdeglobals --group KDE --key SingleClick true
-  kwriteconfig5 --file kwinrc --group Compositing --key AnimationSpeed "0.1"
-  kwriteconfig5 --file kdeglobals --group General --key TerminalApplication alacritty
-  kwriteconfig5 --file kscreenlockerrc --group NightColor --key Active true
-  kwriteconfig5 --file kdeglobals --group RecentDocuments --key UseRecent false
-  kwriteconfig5 --file klipperrc --group General --key SaveHistory false
-  kwriteconfig5 --file klipperrc --group General --key KeepClipboardContents false
-  lookandfeeltool -a org.kde.breezedark.desktop || echo "Breeze Dark not available"
-  qdbus org.kde.KWin /KWin reconfigure
-else
-  echo "Skipping KDE tweaks (non-KDE environment)."
-fi
-
-# -------------------------
-# -------------------------
-# KDE Panel Tweaks
-# -------------------------
-if [[ "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
-  echo -e "\e[44m\e[1mTweaking KDE Panel (navigation bar)...\e[0m"
-  PANEL_CONFIG="$HOME/.config/plasma-org.kde.plasma.desktop-appletsrc"
-  # Backup current config
-  cp "$PANEL_CONFIG" "$PANEL_CONFIG.bak.$(date +%s)"
-  # Force panel to bottom, no margin, always visible
-  sed -i '/\[Containments\]\[.*\]\[General\]/,/^$/ {
-    /location=/d
-    /panelVisibility=/d
-    a location=bottom\npanelVisibility=0
-  }' "$PANEL_CONFIG"
-  # Force margin to 0 and restore height to 35 for clean layout
-  sed -i '/\[Containments\]\[.*\]\[General\]/,/^$/ {
-    /thickness=/d
-    a thickness=35
-  }' "$PANEL_CONFIG"
-  echo "KDE panel configured to bottom position, always visible, with no margin."
-  # Restart plasmashell to apply changes
-  killall plasmashell && kstart5 plasmashell &
-else
-  echo "Skipping KDE panel tweaks (non-KDE environment)."
-fi
-
-# -------------------------
-# KDE Dark Theme Selection
-# -------------------------
-if [[ "$XDG_CURRENT_DESKTOP" =~ KDE|PLASMA ]]; then
-  echo -e "\e[44m\e[1mSetting KDE to use Breeze Dark theme...\e[0m"
-  lookandfeeltool -a org.kde.breezedark.desktop || echo "Breeze Dark not available"
-  kwriteconfig5 --file kdeglobals --group General --key ColorScheme "BreezeDark"
-  qdbus org.kde.KWin /KWin reconfigure
-else
-  echo "Skipping dark theme (non-KDE environment)."
-fi
-
-# -------------------------
-# Optional: AI Tools - Ollama
-# -------------------------
-echo -e "\e[44m\e[1mDo you want to install Ollama (Alpaca GUI will be installed automatically)? [y/N]:\e[0m"
-read -r INSTALL_OLLAMA_CHOICE
-if [[ "$INSTALL_OLLAMA_CHOICE" =~ ^[Yy]$ ]]; then
-  curl -fsSL https://ollama.com/install.sh | sh
-  flatpak install --assumeyes flathub com.jeffser.Alpaca
-else
-  echo "Skipping Ollama and Alpaca installation."
-fi
-
-# -------------------------
-# Web & Code Tools
-# -------------------------
+# ==================================================
+# 12. EXTRA SOFTWARE
+# ==================================================
+echo "[12] Installing VS Code..."
 sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
-sudo tee /etc/yum.repos.d/vscode.repo <<EOL
-[code]
-name=Visual Studio Code
-baseurl=https://packages.microsoft.com/yumrepos/vscode
-enabled=1
-gpgcheck=1
-gpgkey=https://packages.microsoft.com/keys/microsoft.asc
-EOL
-sudo dnf check-update
+sudo sh -c 'echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com/yumrepos/vscode\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc" > /etc/yum.repos.d/vscode.repo'
 sudo dnf install -y code
+
+echo "[12] Installing Google Chrome..."
 sudo dnf install -y fedora-workstation-repositories
 sudo dnf config-manager --set-enabled google-chrome
 sudo dnf install -y google-chrome-stable
 
-# -------------------------
-# Visual Enhancements
-# -------------------------
-sudo dnf install -y powerline-fonts
-wget -P /usr/share/fonts/ \
-  https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Regular.ttf \
-  https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold.ttf \
-  https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Italic.ttf \
-  https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf
-sudo fc-cache -vf
 
-# -------------------------
-# Media Codecs
-# -------------------------
-sudo dnf install -y libavcodec-freeworld
+echo "[12] Installing Cockpit..."
+sudo dnf install -y cockpit
+sudo systemctl enable --now cockpit.socket
 
-# -------------------------
-# Fonts & Font Config
-# -------------------------
-sudo dnf copr enable --assumeyes atim/ubuntu-fonts
-sudo dnf install -y \
-  rsms-inter-fonts ubuntu-family-fonts \
-  dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts \
-  liberation-sans-fonts liberation-serif-fonts liberation-mono-fonts \
-  google-noto-sans-fonts google-noto-serif-fonts google-noto-mono-fonts \
-  fira-code-fonts mozilla-fira-sans-fonts google-roboto-fonts jetbrains-mono-fonts
-wget https://downloads.sourceforge.net/project/mscorefonts2/rpms/msttcore-fonts-installer-2.6-1.noarch.rpm -O /tmp/msfonts.rpm
-sudo dnf install -y /tmp/msfonts.rpm
-mkdir -p ~/.config/fontconfig
-cat <<EOL > ~/.config/fontconfig/fonts.conf
-<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-  <match target="font">
-    <edit name="hinting" mode="assign"><bool>true</bool></edit>
-    <edit name="hintstyle" mode="assign"><const>hintfull</const></edit>
-    <edit name="antialias" mode="assign"><bool>true</bool></edit>
-    <edit name="rgba" mode="assign"><const>rgb</const></edit>
-  </match>
-</fontconfig>
-EOL
+# ==================================================
+# 13. DESKTOP SHORTCUTS
+# ==================================================
+echo "[13] Creating desktop shortcuts..."
+mkdir -p ~/Desktop
+cat > ~/Desktop/Home.desktop <<EOF
+[Desktop Entry]
+Name=Home
+Type=Link
+URL=file://$HOME
+Icon=user-home
+EOF
+cat > ~/Desktop/User.desktop <<EOF
+[Desktop Entry]
+Name=User
+Type=Link
+URL=file:///usr
+Icon=folder
+EOF
+chmod +x ~/Desktop/*.desktop
 
-# -------------------------
-# Final Reboot
-# -------------------------
-echo -e "\e[44m\e[1m✅ Fedora 41 setup completed. Reboot recommended. Reboot now? [y/N]:\e[0m"
-read -r RESPONSE
-if [[ "$RESPONSE" =~ ^[Yy]$ ]]; then
-    echo "Rebooting..."
-    sleep 2
-    reboot
-else
-    echo "Reboot skipped."
+# ==================================================
+# 14. RELOAD KDE
+# ==================================================
+echo "[14] Reloading KDE..."
+qdbus org.kde.KWin /KWin reconfigure || true
+if [[ -n "$KQUIT" ]]; then
+  $KQUIT plasmashell || true
+  [[ -n "$KSTART" ]] && ($KSTART plasmashell >/dev/null 2>&1 &) || true
 fi
+
+echo "=== Done. Reboot or log out/in for full effect. ==="
