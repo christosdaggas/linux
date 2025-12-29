@@ -56,12 +56,18 @@ safe_gsettings_set() {
 # ----------- Optimize DNF ----------
 optimize_dnf() {
   info "Optimizing DNF..."
-  sudo tee -a /etc/dnf/dnf.conf > /dev/null <<'EOL'
+  sudo touch /etc/dnf/dnf.conf
+  # Avoid endlessly appending duplicates
+  if ! grep -q '^fastestmirror=' /etc/dnf/dnf.conf; then
+    sudo tee -a /etc/dnf/dnf.conf > /dev/null <<'EOL'
 fastestmirror=True
 max_parallel_downloads=10
 deltarpm=True
 keepcache=True
 EOL
+  else
+    info "DNF already optimized (fastestmirror entry exists)."
+  fi
 }
 
 # ----------- Enable SSD TRIM -------
@@ -90,7 +96,7 @@ ensure_rpmfusion() {
     https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm || true
 }
 
-# ---------- Repo writers (no duplicates) ----------
+# ---------- Repo writers ----------
 add_tailscale_repo() {
   if [[ -f /etc/yum.repos.d/tailscale.repo ]]; then
     info "Tailscale repo already exists. Skipping."
@@ -161,43 +167,41 @@ EOF
 add_docker_repo() {
   local repo_url="https://download.docker.com/linux/fedora/docker-ce.repo"
 
-  # Ensure we have tools for fallbacks
-  install_if_missing curl
-
-  # If repo file already exists, skip
   if [[ -f /etc/yum.repos.d/docker-ce.repo ]]; then
     info "Docker repo already exists. Skipping."
     return 0
   fi
 
   info "Adding Docker repo..."
+  install_if_missing curl dnf-plugins-core dnf5 dnf5-plugins || true
 
-  # DNF5 syntax (Fedora 41+): config-manager addrepo --from-repofile URL
+  # DNF5 syntax
   if sudo dnf config-manager addrepo --from-repofile "$repo_url" >/dev/null 2>&1; then
     info "Docker repo added via dnf5 config-manager addrepo."
     return 0
   fi
 
-  # DNF4 syntax fallback
+  # DNF4 fallback (older systems)
   if sudo dnf config-manager --add-repo "$repo_url" >/dev/null 2>&1; then
     info "Docker repo added via dnf4 config-manager --add-repo."
     return 0
   fi
 
-  # Final fallback: download repo file directly
-  warn "dnf config-manager repo add failed; writing repo file directly."
+  # Last resort: write repo file directly
+  warn "dnf config-manager failed; writing repo file directly."
   sudo curl -fsSL "$repo_url" -o /etc/yum.repos.d/docker-ce.repo
-  info "Docker repo file saved to /etc/yum.repos.d/docker-ce.repo"
 }
 
 # ---------- Requested feature installers ----------
 install_tailscale_trayscale() {
+  info "Installing Tailscale & Trayscale..."
   add_tailscale_repo
   install_if_missing tailscale trayscale
   sudo systemctl enable --now tailscaled
 }
 
 install_dev_tools_vscodium_vscode() {
+  info "Installing Developer tools (VSCodium + VS Code)..."
   add_vscodium_repo
   add_vscode_repo
   sudo dnf check-update || true
@@ -205,16 +209,19 @@ install_dev_tools_vscodium_vscode() {
 }
 
 install_google_chrome() {
+  info "Installing Google Chrome..."
   add_chrome_repo
   sudo dnf check-update || true
   install_if_missing google-chrome-stable
 }
 
 install_git_gitg() {
+  info "Installing Git & Gitg..."
   install_if_missing git gitg
 }
 
 install_docker_whaler() {
+  info "Installing Docker..."
   add_docker_repo
   sudo dnf check-update || true
   install_if_missing docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -224,22 +231,39 @@ install_docker_whaler() {
     sudo groupadd docker
   fi
   sudo usermod -aG docker "${SUDO_USER:-$USER}"
-  info "User added to docker group. Logout/login required."
+  info "User added to docker group. Logout/login recommended if your shell/session does not pick it up."
 
-  if ! command -v whaler &>/dev/null; then
-    install_if_missing curl
-    sudo curl -fsSL https://raw.githubusercontent.com/P3GLEG/Whaler/master/whaler.sh -o /usr/local/bin/whaler
-    sudo chmod +x /usr/local/bin/whaler
-    info "Whaler installed."
-  else
-    info "Whaler already installed."
+  info "Installing Whaler (Flatpak)..."
+  if ! command -v flatpak &>/dev/null; then
+    info "Flatpak not found. Installing..."
+    sudo dnf install -y flatpak
   fi
+  flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+  flatpak install -y flathub com.github.sdv43.whaler || warn "Failed to install Whaler Flatpak."
 }
 
 install_microsoft_fonts_lpf() {
+  info "Installing Microsoft Fonts (Core + ClearType) via LPF..."
   ensure_rpmfusion
   install_if_missing lpf lpf-mscore-fonts lpf-cleartype-fonts fontconfig
-  lpf update
+
+  local target_user="${SUDO_USER:-$USER}"
+
+  # Ensure pkg-build group exists (LPF expects it)
+  if ! getent group pkg-build >/dev/null; then
+    sudo groupadd -r pkg-build || true
+  fi
+
+  # Add user to pkg-build (idempotent)
+  sudo usermod -aG pkg-build "$target_user" || true
+
+  # Run lpf update as the real user (not root)
+  info "Running 'lpf update' as user: $target_user"
+  sudo -u "$target_user" -H lpf update || {
+    warn "LPF failed. If it complains about 'pkg-build', log out/in (or reboot) and run the fonts option again."
+    return 0
+  }
+
   sudo fc-cache -rv
 }
 
@@ -270,9 +294,7 @@ add_greek_keyboard_userlevel() {
   info "Greek keyboard added (user-level)."
 }
 
-# ============================================================
-# Initial Setup
-# ============================================================
+# ---------- Initial Setup ----------
 clear
 info "Starting Fedora Workstation Setup"
 read -n1 -s -rp "Press any key to continue..."
@@ -333,7 +355,7 @@ install_if_missing "${PRODUCTIVITY_APPS[@]}"
 ensure_rpmfusion
 
 # ---------- Enable snap support -------------
-install_if_missing snapd
+sudo dnf install -y snapd
 sudo ln -s /var/lib/snapd/snap /snap 2>/dev/null || true
 
 # ---------- Firmware Update --------
@@ -345,7 +367,7 @@ sudo fwupdmgr update || true
 # ============================================================
 # NEW OPTIONS (as requested)
 # ============================================================
-if ask_user "Install Tailscale + Trayscale (dnf + repo)?"; then
+if ask_user "Install Tailscale & Trayscale (dnf + repo)?"; then
   install_tailscale_trayscale
 fi
 
@@ -361,7 +383,7 @@ if ask_user "Install Git & Gitg (dnf)?"; then
   install_git_gitg
 fi
 
-if ask_user "Install Docker & Whaler (dnf + Docker repo)?"; then
+if ask_user "Install Docker & Whaler (Docker via dnf, Whaler via Flatpak)?"; then
   install_docker_whaler
 fi
 
@@ -405,16 +427,12 @@ fi
 if ask_user "Enhance Fedora GNOME experience (ZSH, Dark mode, Clipboard, AppImage support, etc.)?"; then
   info "Enhancing GNOME user experience..."
   install_if_missing fzf bat ripgrep
-
-  # Flatpak auto-update timer (if present)
   systemctl --user enable --now flatpak-system-update.timer || true
 
-  # Enable Vitals extension if already installed
   if gnome-extensions list 2>/dev/null | grep -q Vitals@CoreCoding.com; then
     gnome-extensions enable Vitals@CoreCoding.com || true
   fi
 
-  # USBGuard
   if ask_user "Install USBGuard to protect against unauthorized USB devices?"; then
     install_if_missing usbguard
     sudo systemctl enable --now usbguard.service
@@ -510,8 +528,8 @@ if ask_user "Install Android Studio?"; then
   flatpak install -y flathub com.google.AndroidStudio
 fi
 
-# --------- AI Tools: Ollama & Alpaca GUI ----------
-if ask_user "Install Ollama and Alpaca GUI?"; then
+# --------- AI Tools: Ollama ONLY (Alpaca removed) ----------
+if ask_user "Install Ollama?"; then
   OLLAMA_BIN="/usr/local/bin/ollama"
   if [[ ! -x "$OLLAMA_BIN" ]]; then
     install_if_missing curl
@@ -520,8 +538,6 @@ if ask_user "Install Ollama and Alpaca GUI?"; then
   else
     info "Ollama already installed. Skipping..."
   fi
-
-  flatpak install -y flathub com.jeffser.Alpaca || echo "⚠️ Failed to install Alpaca GUI"
 fi
 
 # --------- Extra Fonts ----------
@@ -564,7 +580,6 @@ if ask_user "Install extra fonts?"; then
   )
   install_if_missing "${FONT_PACKAGES[@]}"
 
-  # MesloLGS NF for powerlevel10k
   install_if_missing wget
   sudo wget -q -P /usr/share/fonts/ \
     https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Regular.ttf \
@@ -574,7 +589,6 @@ if ask_user "Install extra fonts?"; then
 
   sudo fc-cache -fv || true
 
-  # Font rendering tweaks
   mkdir -p ~/.config/fontconfig
   cat <<'EOL' > ~/.config/fontconfig/fonts.conf
 <?xml version="1.0"?>
