@@ -2,16 +2,12 @@
 set -eo pipefail
 shopt -s extglob
 
-# ============================================================
-# Colors
-# ============================================================
+# ------------ Colors ---------------
 info()  { echo -e "\e[36m[INFO]\e[0m $1"; }
 warn()  { echo -e "\e[33m[WARN]\e[0m $1"; }
 error() { echo -e "\e[31m[ERROR]\e[0m $1"; }
 
-# ============================================================
-# Prompt y/n
-# ============================================================
+# ------------ Prompt y/n -----------
 ask_user() {
   local prompt="$1"
   while true; do
@@ -24,9 +20,7 @@ ask_user() {
   done
 }
 
-# ============================================================
-# Install if missing (keeps your original semantics)
-# ============================================================
+# --------- Install if Missing ------
 install_if_missing() {
   local packages=("$@")
   local to_install=()
@@ -46,9 +40,7 @@ install_if_missing() {
   fi
 }
 
-# ============================================================
-# Safe gsettings set
-# ============================================================
+# ---------- Safe gsettings Set ----------
 safe_gsettings_set() {
   local schema="$1"
   local key="$2"
@@ -61,178 +53,24 @@ safe_gsettings_set() {
   fi
 }
 
-# ============================================================
-# Repo helpers
-# ============================================================
-repo_file_write_if_missing() {
-  local file="$1"
-  shift
-  if [[ -f "$file" ]]; then
-    info "Repo file $(basename "$file") already exists. Skipping."
-    return 0
-  fi
-  sudo tee "$file" >/dev/null <<EOF
-$*
-EOF
-  info "Created repo file $(basename "$file")."
-}
-
-ensure_rpmfusion() {
-  if rpm -q rpmfusion-free-release rpmfusion-nonfree-release &>/dev/null; then
-    info "RPM Fusion already enabled."
-    return 0
-  fi
-
-  info "Enabling RPM Fusion Repositories..."
-  sudo dnf install -y \
-    https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
-    https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm || true
-}
-
-add_tailscale_repo() {
-  repo_file_write_if_missing /etc/yum.repos.d/tailscale.repo \
-"[tailscale-stable]
-name=Tailscale stable
-baseurl=https://pkgs.tailscale.com/stable/fedora/\$basearch
-enabled=1
-gpgcheck=1
-gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg"
-}
-
-add_vscodium_repo() {
-  repo_file_write_if_missing /etc/yum.repos.d/vscodium.repo \
-"[gitlab.com_paulcarroty_vscodium_repo]
-name=gitlab.com_paulcarroty_vscodium_repo
-baseurl=https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/rpms/
-enabled=1
-gpgcheck=1
-repo_gpgcheck=1
-gpgkey=https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg
-metadata_expire=1h"
-}
-
-add_vscode_repo() {
-  sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc || true
-  repo_file_write_if_missing /etc/yum.repos.d/vscode.repo \
-"[code]
-name=Visual Studio Code
-baseurl=https://packages.microsoft.com/yumrepos/vscode
-enabled=1
-gpgcheck=1
-gpgkey=https://packages.microsoft.com/keys/microsoft.asc"
-}
-
-add_chrome_repo() {
-  repo_file_write_if_missing /etc/yum.repos.d/google-chrome.repo \
-"[google-chrome]
-name=google-chrome
-baseurl=https://dl.google.com/linux/chrome/rpm/stable/x86_64
-enabled=1
-gpgcheck=1
-gpgkey=https://dl.google.com/linux/linux_signing_key.pub"
-}
-
-add_docker_repo() {
-  install_if_missing dnf-plugins-core
-  if [[ -f /etc/yum.repos.d/docker-ce.repo ]]; then
-    info "Docker repo already exists. Skipping."
-    return 0
-  fi
-  info "Adding Docker official repo..."
-  sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
-}
-
-# ============================================================
-# Requested feature installers
-# ============================================================
-install_tailscale_trayscale() {
-  info "Installing Tailscale & Trayscale..."
-  add_tailscale_repo
-  install_if_missing tailscale trayscale
-  sudo systemctl enable --now tailscaled
-}
-
-install_dev_tools() {
-  info "Installing Developer tools (VSCodium + VS Code)..."
-  add_vscodium_repo
-  add_vscode_repo
-  sudo dnf check-update || true
-  install_if_missing codium code
-}
-
-install_google_chrome() {
-  info "Installing Google Chrome..."
-  add_chrome_repo
-  sudo dnf check-update || true
-  install_if_missing google-chrome-stable
-}
-
-install_git_gitg() {
-  info "Installing Git & Gitg..."
-  install_if_missing git gitg
-}
-
-install_docker_whaler() {
-  info "Installing Docker & Whaler..."
-  add_docker_repo
-  install_if_missing docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  sudo systemctl enable --now docker
-
-  # Ensure docker group and add user
-  if ! getent group docker >/dev/null; then
-    sudo groupadd docker
-  fi
-  sudo usermod -aG docker "${SUDO_USER:-$USER}"
-  info "Added user to docker group. Logout/login required for group changes."
-
-  # Install Whaler if missing
-  if ! command -v whaler &>/dev/null; then
-    install_if_missing curl
-    sudo curl -fsSL https://raw.githubusercontent.com/P3GLEG/Whaler/master/whaler.sh -o /usr/local/bin/whaler
-    sudo chmod +x /usr/local/bin/whaler
-    info "Whaler installed to /usr/local/bin/whaler"
-  else
-    info "Whaler already installed."
-  fi
-}
-
-install_microsoft_fonts_lpf() {
-  info "Installing Microsoft Fonts (Core + ClearType) via LPF..."
-  ensure_rpmfusion
-  install_if_missing lpf lpf-mscore-fonts lpf-cleartype-fonts fontconfig
-  lpf update
-  sudo fc-cache -rv
-}
-
-# ============================================================
-# Optimize DNF (idempotent-ish)
-# ============================================================
+# ----------- Optimize DNF ----------
 optimize_dnf() {
   info "Optimizing DNF..."
-  sudo touch /etc/dnf/dnf.conf
-  if ! grep -q '^fastestmirror=' /etc/dnf/dnf.conf; then
-    sudo tee -a /etc/dnf/dnf.conf >/dev/null <<'EOL'
+  sudo tee -a /etc/dnf/dnf.conf > /dev/null <<'EOL'
 fastestmirror=True
 max_parallel_downloads=10
 deltarpm=True
 keepcache=True
 EOL
-  else
-    info "DNF already optimized (fastestmirror entry exists)."
-  fi
 }
 
-# ============================================================
-# Enable SSD TRIM
-# ============================================================
+# ----------- Enable SSD TRIM -------
 enable_ssd_trim() {
   info "Enabling SSD trim..."
   sudo systemctl enable --now fstrim.timer
 }
 
-# ============================================================
-# Change Hostname
-# ============================================================
+# ---------- Change Hostname --------
 change_hostname() {
   read -rp "$(echo -e "\e[44m\e[1mEnter new hostname:\e[0m ")" NEW_HOSTNAME
   info "Changing hostname to $NEW_HOSTNAME..."
@@ -240,19 +78,181 @@ change_hostname() {
   sudo sed -i "s/127.0.1.1.*/127.0.1.1   $NEW_HOSTNAME/" /etc/hosts || true
 }
 
-# ============================================================
-# Greek keyboard user-level (automatic)
-# ============================================================
+# ---------- RPM Fusion (idempotent) ----------
+ensure_rpmfusion() {
+  if rpm -q rpmfusion-free-release rpmfusion-nonfree-release &>/dev/null; then
+    info "RPM Fusion already enabled."
+    return 0
+  fi
+  info "Enabling RPM Fusion Repositories..."
+  sudo dnf install -y \
+    https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
+    https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm || true
+}
+
+# ---------- Repo writers (no duplicates) ----------
+add_tailscale_repo() {
+  if [[ -f /etc/yum.repos.d/tailscale.repo ]]; then
+    info "Tailscale repo already exists. Skipping."
+    return 0
+  fi
+  info "Adding Tailscale repo..."
+  sudo tee /etc/yum.repos.d/tailscale.repo >/dev/null <<'EOF'
+[tailscale-stable]
+name=Tailscale stable
+baseurl=https://pkgs.tailscale.com/stable/fedora/$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+EOF
+}
+
+add_vscodium_repo() {
+  if [[ -f /etc/yum.repos.d/vscodium.repo ]]; then
+    info "VSCodium repo already exists. Skipping."
+    return 0
+  fi
+  info "Adding VSCodium repo..."
+  sudo tee /etc/yum.repos.d/vscodium.repo >/dev/null <<'EOF'
+[gitlab.com_paulcarroty_vscodium_repo]
+name=gitlab.com_paulcarroty_vscodium_repo
+baseurl=https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/rpms/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg
+metadata_expire=1h
+EOF
+}
+
+add_vscode_repo() {
+  if [[ -f /etc/yum.repos.d/vscode.repo ]]; then
+    info "VS Code repo already exists. Skipping."
+    return 0
+  fi
+  info "Adding VS Code repo..."
+  sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc || true
+  sudo tee /etc/yum.repos.d/vscode.repo >/dev/null <<'EOF'
+[code]
+name=Visual Studio Code
+baseurl=https://packages.microsoft.com/yumrepos/vscode
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.microsoft.com/keys/microsoft.asc
+EOF
+}
+
+add_chrome_repo() {
+  if [[ -f /etc/yum.repos.d/google-chrome.repo ]]; then
+    info "Google Chrome repo already exists. Skipping."
+    return 0
+  fi
+  info "Adding Google Chrome repo..."
+  sudo tee /etc/yum.repos.d/google-chrome.repo >/dev/null <<'EOF'
+[google-chrome]
+name=google-chrome
+baseurl=https://dl.google.com/linux/chrome/rpm/stable/x86_64
+enabled=1
+gpgcheck=1
+gpgkey=https://dl.google.com/linux/linux_signing_key.pub
+EOF
+}
+
+add_docker_repo() {
+  local repo_url="https://download.docker.com/linux/fedora/docker-ce.repo"
+
+  # Ensure we have tools for fallbacks
+  install_if_missing curl
+
+  # If repo file already exists, skip
+  if [[ -f /etc/yum.repos.d/docker-ce.repo ]]; then
+    info "Docker repo already exists. Skipping."
+    return 0
+  fi
+
+  info "Adding Docker repo..."
+
+  # DNF5 syntax (Fedora 41+): config-manager addrepo --from-repofile URL
+  if sudo dnf config-manager addrepo --from-repofile "$repo_url" >/dev/null 2>&1; then
+    info "Docker repo added via dnf5 config-manager addrepo."
+    return 0
+  fi
+
+  # DNF4 syntax fallback
+  if sudo dnf config-manager --add-repo "$repo_url" >/dev/null 2>&1; then
+    info "Docker repo added via dnf4 config-manager --add-repo."
+    return 0
+  fi
+
+  # Final fallback: download repo file directly
+  warn "dnf config-manager repo add failed; writing repo file directly."
+  sudo curl -fsSL "$repo_url" -o /etc/yum.repos.d/docker-ce.repo
+  info "Docker repo file saved to /etc/yum.repos.d/docker-ce.repo"
+}
+
+# ---------- Requested feature installers ----------
+install_tailscale_trayscale() {
+  add_tailscale_repo
+  install_if_missing tailscale trayscale
+  sudo systemctl enable --now tailscaled
+}
+
+install_dev_tools_vscodium_vscode() {
+  add_vscodium_repo
+  add_vscode_repo
+  sudo dnf check-update || true
+  install_if_missing codium code
+}
+
+install_google_chrome() {
+  add_chrome_repo
+  sudo dnf check-update || true
+  install_if_missing google-chrome-stable
+}
+
+install_git_gitg() {
+  install_if_missing git gitg
+}
+
+install_docker_whaler() {
+  add_docker_repo
+  sudo dnf check-update || true
+  install_if_missing docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  sudo systemctl enable --now docker
+
+  if ! getent group docker >/dev/null; then
+    sudo groupadd docker
+  fi
+  sudo usermod -aG docker "${SUDO_USER:-$USER}"
+  info "User added to docker group. Logout/login required."
+
+  if ! command -v whaler &>/dev/null; then
+    install_if_missing curl
+    sudo curl -fsSL https://raw.githubusercontent.com/P3GLEG/Whaler/master/whaler.sh -o /usr/local/bin/whaler
+    sudo chmod +x /usr/local/bin/whaler
+    info "Whaler installed."
+  else
+    info "Whaler already installed."
+  fi
+}
+
+install_microsoft_fonts_lpf() {
+  ensure_rpmfusion
+  install_if_missing lpf lpf-mscore-fonts lpf-cleartype-fonts fontconfig
+  lpf update
+  sudo fc-cache -rv
+}
+
+# ---------- Greek keyboard (user-level, automatic) ----------
 add_greek_keyboard_userlevel() {
   if ! command -v gsettings &>/dev/null; then
-    warn "gsettings not found; skipping Greek keyboard."
+    warn "gsettings not found – skipping Greek keyboard."
     return
   fi
 
-  # Try reading current sources; if this fails (no session bus), skip without hard-failing.
   local current
   if ! current="$(gsettings get org.gnome.desktop.input-sources sources 2>/dev/null)"; then
-    warn "Could not read GNOME input sources (no session?). Skipping Greek keyboard."
+    warn "Could not read GNOME input sources (no session bus?). Skipping Greek keyboard."
     return
   fi
 
@@ -267,11 +267,11 @@ add_greek_keyboard_userlevel() {
     gsettings set org.gnome.desktop.input-sources sources "${current%]*}, ('xkb', 'gr')]"
   fi
 
-  info "Added Greek keyboard layout (user-level)."
+  info "Greek keyboard added (user-level)."
 }
 
 # ============================================================
-# Start
+# Initial Setup
 # ============================================================
 clear
 info "Starting Fedora Workstation Setup"
@@ -281,21 +281,14 @@ sudo -v
 while true; do sudo -v; sleep 60; done & SUDO_PID=$!
 trap 'kill $SUDO_PID' EXIT
 
-# Optional warning for ostree-based variants
-if command -v rpm-ostree &>/dev/null; then
-  warn "rpm-ostree detected. This script targets Fedora Workstation (dnf). Some steps may not apply."
-fi
-
 optimize_dnf
 enable_ssd_trim
 change_hostname
 
-# Auto add Greek keyboard (user-level)
+# Auto add Greek keyboard user-level
 add_greek_keyboard_userlevel
 
-# ============================================================
-# Cleanup Unwanted Defaults
-# ============================================================
+# -------- Cleanup Unwanted Defaults --------
 info "Removing unwanted preinstalled applications..."
 UNWANTED_PACKAGES=(evince rhythmbox abrt gnome-tour mediawriter)
 sudo dnf remove -y "${UNWANTED_PACKAGES[@]}" || true
@@ -303,18 +296,15 @@ sudo dnf remove -y "${UNWANTED_PACKAGES[@]}" || true
 info "Updating system packages..."
 sudo dnf update -y
 
-# ============================================================
-# Group Installs
-# ============================================================
-CORE_PACKAGES=(openssl curl fontconfig xorg-x11-font-utils wget glib2 dnf-plugins-core)
+# ----------- Group Installs --------
+CORE_PACKAGES=(openssl curl fontconfig xorg-x11-font-utils dnf5 dnf5-plugins glib2 dnf-plugins-core)
 SECURITY_PACKAGES=(dnf-automatic fail2ban rkhunter lynis)
 TWEAK_PACKAGES=(gnome-color-manager zram-generator-defaults)
 PRODUCTIVITY_APPS=(filezilla flatseal decibels dconf-editor papers)
 
-# ============================================================
-# Security Enhancements (kept)
-# ============================================================
+# -------- Security Enhancements --------
 info "Installing security-related tools..."
+# sudo systemctl enable --now dnf-automatic.timer
 sudo firewall-cmd --set-default-zone=home || warn "Could not set firewall default zone"
 
 # Enable snapper if on btrfs root
@@ -339,37 +329,28 @@ install_if_missing "${SECURITY_PACKAGES[@]}"
 install_if_missing "${TWEAK_PACKAGES[@]}"
 install_if_missing "${PRODUCTIVITY_APPS[@]}"
 
-# ============================================================
-# RPM Fusion (kept)
-# ============================================================
+# ---------- RPM Fusion -------------
 ensure_rpmfusion
 
-# ============================================================
-# Enable snap support (kept)
-# ============================================================
-info "Enabling snap support..."
+# ---------- Enable snap support -------------
 install_if_missing snapd
-if [[ ! -e /snap ]]; then
-  sudo ln -s /var/lib/snapd/snap /snap || true
-fi
+sudo ln -s /var/lib/snapd/snap /snap 2>/dev/null || true
 
-# ============================================================
-# Firmware update (kept)
-# ============================================================
+# ---------- Firmware Update --------
 info "Updating firmware..."
 sudo fwupdmgr refresh --force || true
 sudo fwupdmgr get-updates || true
 sudo fwupdmgr update || true
 
 # ============================================================
-# New requested options (inserted cleanly)
+# NEW OPTIONS (as requested)
 # ============================================================
-if ask_user "Install Tailscale & Trayscale (dnf + repo)?"; then
+if ask_user "Install Tailscale + Trayscale (dnf + repo)?"; then
   install_tailscale_trayscale
 fi
 
 if ask_user "Install Developer tools (VSCodium + VS Code, dnf + repos)?"; then
-  install_dev_tools
+  install_dev_tools_vscodium_vscode
 fi
 
 if ask_user "Install Google Chrome (dnf + repo)?"; then
@@ -388,9 +369,7 @@ if ask_user "Install Microsoft Fonts (Core + ClearType via LPF)?"; then
   install_microsoft_fonts_lpf
 fi
 
-# ============================================================
-# Cockpit (kept)
-# ============================================================
+# --------- Cockpit (web-based system manager) ----------
 if ask_user "Install Cockpit (web-based system manager)?"; then
   install_if_missing cockpit
   sudo systemctl enable --now cockpit.socket
@@ -401,9 +380,7 @@ if ask_user "Install Cockpit (web-based system manager)?"; then
   echo "Cockpit installation complete. You can access it at https://localhost:9090"
 fi
 
-# ============================================================
-# GNOME Tweaks (kept)
-# ============================================================
+# --------- GNOME Tweaks ----------
 if ask_user "Install GNOME Tweaks and configure UI?"; then
   install_if_missing gnome-tweaks gnome-extensions-app gnome-usage
   safe_gsettings_set org.gnome.desktop.interface enable-animations false
@@ -424,43 +401,38 @@ if ask_user "Install GNOME Tweaks and configure UI?"; then
   safe_gsettings_set org.gnome.nautilus.preferences always-use-location-entry true
 fi
 
-# ============================================================
-# Fedora GNOME User Experience Enhancements (kept)
-# ============================================================
+# -------- Fedora GNOME User Experience Enhancements --------
 if ask_user "Enhance Fedora GNOME experience (ZSH, Dark mode, Clipboard, AppImage support, etc.)?"; then
   info "Enhancing GNOME user experience..."
   install_if_missing fzf bat ripgrep
 
+  # Flatpak auto-update timer (if present)
   systemctl --user enable --now flatpak-system-update.timer || true
 
+  # Enable Vitals extension if already installed
   if gnome-extensions list 2>/dev/null | grep -q Vitals@CoreCoding.com; then
     gnome-extensions enable Vitals@CoreCoding.com || true
   fi
 
+  # USBGuard
   if ask_user "Install USBGuard to protect against unauthorized USB devices?"; then
     install_if_missing usbguard
     sudo systemctl enable --now usbguard.service
   fi
 fi
 
-# ============================================================
-# LibreOffice Suite (kept)
-# ============================================================
+# -------- LibreOffice Suite --------
 if ask_user "Install LibreOffice with English and Greek support?"; then
   install_if_missing libreoffice libreoffice-langpack-en libreoffice-langpack-el
 fi
 
-# ============================================================
-# Design Applications (kept)
-# ============================================================
+# -------- Design Applications -------
 if ask_user "Install design applications (GIMP, Inkscape)?"; then
   MEDIA_APPS=(gimp inkscape)
   install_if_missing "${MEDIA_APPS[@]}"
 fi
 
-# ============================================================
-# Flatpak Applications (kept)
-# ============================================================
+# --------- Flatpak Applications ----------
 if ask_user "Install Flatpak applications from Flathub?"; then
   if ! command -v flatpak &>/dev/null; then
     info "Flatpak not found. Installing..."
@@ -470,21 +442,27 @@ if ask_user "Install Flatpak applications from Flathub?"; then
   FLATPAK_APPS=(
     com.mattjakeman.ExtensionManager
     io.github.realmazharhussain.GdmSettings
+    io.github.flattool.Warehouse
     org.gustavoperedo.FontDownloader
     io.github.flattool.Ignition
+    com.usebottles.bottles
+    io.github.nokse22.Exhibit
+    io.gitlab.news_flash.NewsFlash
+    io.github.nate_xyz.Paleta
     org.signal.Signal
     org.gnome.Papers
     org.gnome.Firmware
+    org.gnome.Calls
     org.gnome.World.PikaBackup
+    com.rustdesk.RustDesk
+    com.anydesk.Anydesk
   )
   for app in "${FLATPAK_APPS[@]}"; do
     flatpak install -y flathub "$app" || echo "⚠️ Failed to install $app"
   done
 fi
 
-# ============================================================
-# GNOME Shell extensions (kept)
-# ============================================================
+# --------- GNOME Shell extensions ----------
 if ask_user "Install GNOME Shell extensions?"; then
   install_if_missing jq unzip gnome-extensions gnome-shell-extension-prefs || true
   declare -A EXTENSIONS=(
@@ -527,20 +505,12 @@ if ask_user "Install GNOME Shell extensions?"; then
   done
 fi
 
-# ============================================================
-# Android Studio (kept)
-# ============================================================
+# --------- Android Studio ----------
 if ask_user "Install Android Studio?"; then
-  if ! command -v flatpak &>/dev/null; then
-    info "Flatpak not found. Installing..."
-    sudo dnf install -y flatpak
-  fi
   flatpak install -y flathub com.google.AndroidStudio
 fi
 
-# ============================================================
-# AI Tools: Ollama & Alpaca GUI (kept)
-# ============================================================
+# --------- AI Tools: Ollama & Alpaca GUI ----------
 if ask_user "Install Ollama and Alpaca GUI?"; then
   OLLAMA_BIN="/usr/local/bin/ollama"
   if [[ ! -x "$OLLAMA_BIN" ]]; then
@@ -551,19 +521,12 @@ if ask_user "Install Ollama and Alpaca GUI?"; then
     info "Ollama already installed. Skipping..."
   fi
 
-  if ! command -v flatpak &>/dev/null; then
-    info "Flatpak not found. Installing..."
-    sudo dnf install -y flatpak
-  fi
   flatpak install -y flathub com.jeffser.Alpaca || echo "⚠️ Failed to install Alpaca GUI"
 fi
 
-# ============================================================
-# Extra Fonts (kept) - plus your font rendering tweaks
-# (Microsoft fonts are handled by the LPF prompt above)
-# ============================================================
+# --------- Extra Fonts ----------
 install_msttcore_fonts() {
-  # Legacy fallback (not used by default). Kept from your script.
+  # Legacy fallback kept from your script (not used by default).
   local MSCORE_RPM="/tmp/msttcore-fonts-installer-2.6-1.noarch.rpm"
   local MAX_RETRIES=5
   local attempt=1
@@ -601,6 +564,7 @@ if ask_user "Install extra fonts?"; then
   )
   install_if_missing "${FONT_PACKAGES[@]}"
 
+  # MesloLGS NF for powerlevel10k
   install_if_missing wget
   sudo wget -q -P /usr/share/fonts/ \
     https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Regular.ttf \
@@ -610,6 +574,7 @@ if ask_user "Install extra fonts?"; then
 
   sudo fc-cache -fv || true
 
+  # Font rendering tweaks
   mkdir -p ~/.config/fontconfig
   cat <<'EOL' > ~/.config/fontconfig/fonts.conf
 <?xml version="1.0"?>
@@ -625,22 +590,16 @@ if ask_user "Install extra fonts?"; then
 EOL
 fi
 
-# ============================================================
-# Media Codecs (kept)
-# ============================================================
+# --------- Media Codecs ------------
 if ask_user "Install media codecs (libavcodec-freeworld)?"; then
   ensure_rpmfusion
   install_if_missing libavcodec-freeworld
 fi
 
-# ============================================================
-# Antivirus Tools (REMOVED per your requirement)
-# - ClamAV and ClamTk prompts intentionally removed.
-# ============================================================
+# -------- Antivirus Tools ----------
+# Removed per your requirement (ClamAV/ClamTk prompts deleted).
 
-# ============================================================
-# Final reboot prompt (kept)
-# ============================================================
+# ------------ Final Prompt ---------
 if ask_user "Fedora setup completed. Reboot now?"; then
   info "Rebooting..."
   sleep 2
