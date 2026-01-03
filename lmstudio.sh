@@ -4,8 +4,8 @@ set -e
 # -------------------------
 # Configuration
 # -------------------------
-APPIMAGE_URL="https://installers.lmstudio.ai/linux/x64/0.3.16-8/LM-Studio-0.3.16-8-x64.AppImage"
-APPIMAGE_NAME="LM-Studio-0.3.16-8-x64.AppImage"
+APPIMAGE_URL="https://installers.lmstudio.ai/linux/x64/0.3.36-1/LM-Studio-0.3.36-1-x64.AppImage"
+APPIMAGE_NAME="LM-Studio-0.3.36-1-x64.AppImage"
 BIN_DIR="$HOME/.local/bin"
 APP_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons"
