@@ -1,0 +1,27 @@
+## Proton VPN
+wget "https://repo.protonvpn.com/fedora-$(cat /etc/fedora-release | cut -d' ' -f 3)-stable/protonvpn-stable-release/protonvpn-stable-release-1.0.3-1.noarch.rpm"
+sudo dnf install ./protonvpn-stable-release-1.0.3-1.noarch.rpm && sudo dnf check-update --refresh
+sudo dnf install proton-vpn-gnome-desktop libappindicator-gtk3 gnome-shell-extension-appindicator gnome-extensions-app
+
+
+## Microsoft Fonts
+sudo mkdir -p /usr/local/share/fonts/microsoft
+sudo cp /path/to/fonts/*.{ttf,otf,ttc} /usr/local/share/fonts/microsoft/ 2>/dev/null
+sudo chown -R root: /usr/local/share/fonts/microsoft
+sudo chmod 644 /usr/local/share/fonts/microsoft/*
+sudo restorecon -vFr /usr/local/share/fonts/microsoft
+sudo fc-cache -v
+
+## VS Codium
+sudo tee -a /etc/yum.repos.d/vscodium.repo << 'EOF'
+[gitlab.com_paulcarroty_vscodium_repo]
+name=gitlab.com_paulcarroty_vscodium_repo
+baseurl=https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/rpms/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg
+metadata_expire=1h
+EOF
+
+sudo dnf install codium
