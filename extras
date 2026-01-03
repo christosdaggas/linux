@@ -25,3 +25,36 @@ metadata_expire=1h
 EOF
 
 sudo dnf install codium
+
+
+## Remember last selection
+sudo nano /etc/default/grub
+
+Set (or add) these lines:
+GRUB_DEFAULT=saved
+GRUB_SAVEDEFAULT=true
+GRUB_TIMEOUT_STYLE=menu
+GRUB_TIMEOUT=5
+
+Save and exit.
+Ensure GRUB can store the saved entry
+Create/initialize the environment file:
+
+sudo grub2-editenv /boot/grub2/grubenv create
+
+Rebuild GRUB config
+On Fedora, this is typically the correct target (both BIOS and most UEFI Fedora setups):
+sudo grub2-mkconfig -o /boot/grub2/grub.cfg
+
+
+## keep N kernels
+sudo nano /etc/dnf/dnf.conf
+installonly_limit=1
+sudo dnf repoquery --installonly --latest-limit=-1 -q | sudo xargs -r dnf remove -y
+
+## Add kernel memory options
+sudo grubby --update-kernel=ALL --args="amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856"
+sudo grubby --info=DEFAULT | grep -E '^args='
+
+Reboot, then confirm they are active:
+cat /proc/cmdline | tr ' ' '\n' | grep -E 'amd_iommu=off|amdgpu\.gttsize=|ttm\.pages_limit='
