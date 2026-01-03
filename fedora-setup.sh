@@ -460,20 +460,14 @@ if ask_user "Install Flatpak applications from Flathub?"; then
   FLATPAK_APPS=(
     com.mattjakeman.ExtensionManager
     io.github.realmazharhussain.GdmSettings
-    io.github.flattool.Warehouse
+    io.missioncenter.MissionCenter
     org.gustavoperedo.FontDownloader
     io.github.flattool.Ignition
-    com.usebottles.bottles
-    io.github.nokse22.Exhibit
     io.gitlab.news_flash.NewsFlash
     io.github.nate_xyz.Paleta
     org.signal.Signal
     org.gnome.Papers
     org.gnome.Firmware
-    org.gnome.Calls
-    org.gnome.World.PikaBackup
-    com.rustdesk.RustDesk
-    com.anydesk.Anydesk
   )
   for app in "${FLATPAK_APPS[@]}"; do
     flatpak install -y flathub "$app" || echo "⚠️ Failed to install $app"
