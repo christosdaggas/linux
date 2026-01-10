@@ -5,12 +5,15 @@ sudo dnf install proton-vpn-gnome-desktop libappindicator-gtk3 gnome-shell-exten
 
 
 ## Microsoft Fonts
-sudo mkdir -p /usr/local/share/fonts/microsoft
-sudo cp /path/to/fonts/*.{ttf,otf,ttc} /usr/local/share/fonts/microsoft/ 2>/dev/null
-sudo chown -R root: /usr/local/share/fonts/microsoft
-sudo chmod 644 /usr/local/share/fonts/microsoft/*
-sudo restorecon -vFr /usr/local/share/fonts/microsoft
-sudo fc-cache -v
+cd /tmp
+sudo dnf install -y curl cabextract fontconfig
+curl -L -o msttcore-fonts-installer.rpm \
+  https://downloads.sourceforge.net/project/mscorefonts2/rpms/msttcore-fonts-installer-2.6-1.noarch.rpm
+sudo rpm -ivh --nodigest --nofiledigest msttcore-fonts-installer.rpm
+sudo fc-cache -rv
+fc-match Arial
+fc-list | grep -i "Times New Roman" | head
+
 
 ## VS Codium
 sudo tee -a /etc/yum.repos.d/vscodium.repo << 'EOF'
