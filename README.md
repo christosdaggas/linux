@@ -1,6 +1,6 @@
-# Fedora 42 Quick Setup Script 🚀
+# Fedora 43 Quick Setup Script 🚀
 
-This script automates the initial setup and configuration of Fedora 41/42, simplifying system optimization, customization, productivity improvements, and visual enhancements, resulting in a clean, efficient, and fully-featured Linux environment.
+This script automates the initial setup and configuration of Fedora 41/42/43, simplifying system optimization, customization, productivity improvements, and visual enhancements, resulting in a clean, efficient, and fully-featured Linux environment.
 
 ---
 
@@ -85,7 +85,7 @@ chmod +x fedora-setup.sh
 
 ## 🖥️ Tested Environment
 
-- Fedora Workstation 41 & 42  
+- Fedora Workstation 41/42 & 43
 - GNOME Desktop Environment
 
 ---
@@ -96,4 +96,4 @@ Feel free to report issues, request new features, or submit pull requests to imp
 
 ---
 
-**Enjoy your optimized Fedora 41/42 experience! 🎉**
+**Enjoy your optimized Fedora experience! 🎉**
