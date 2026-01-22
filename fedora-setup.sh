@@ -398,6 +398,162 @@ if ask_user "Check firmware updates (fwupd)?"; then
   ask_user "Apply firmware updates?" && sudo fwupdmgr update
 fi
 
+if ask_user "Setup a second internal disk (Mount/BitLocker)?"; then
+  setup_secondary_disk
+fi
+
+# ============================================================
+# ΝΕΑ ΣΥΝΑΡΤΗΣΗ ΓΙΑ ΔΙΣΚΟ (BITLOCKER & NVMe SUPPORT)
+# - Επιλογή ΔΙΣΚΟΥ και μετά ΕΠΙΛΟΓΗ PARTITION (όχι υπόθεση p1/1)
+# - Αποφυγή διπλών fstab entries
+# ============================================================
+setup_secondary_disk() {
+  info "Starting Disk Setup..."
+
+  local USERNAME USERID GROUPID
+  USERNAME="${SUDO_USER:-$(logname 2>/dev/null || true)}"
+  [ -z "$USERNAME" ] && USERNAME="$USER"
+  USERID="$(id -u "$USERNAME")"
+  GROUPID="$(id -g "$USERNAME")"
+
+  echo "=== Available Disks ==="
+  mapfile -t DISKS < <(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}')
+  if [ ${#DISKS[@]} -eq 0 ]; then
+    error "No disks found."
+    return 1
+  fi
+
+  local i=1 DISK SIZE
+  for DISK in "${DISKS[@]}"; do
+    SIZE="$(lsblk -dnbo SIZE "$DISK" | numfmt --to=iec-i --suffix=B)"
+    echo "[$i] $DISK ($SIZE)"
+    i=$((i+1))
+  done
+
+  local DISK_NUMBER SELECTED_DISK
+  while true; do
+    read -rp "Select disk number: " DISK_NUMBER
+    if [[ "$DISK_NUMBER" =~ ^[0-9]+$ ]] && [ "$DISK_NUMBER" -ge 1 ] && [ "$DISK_NUMBER" -le "${#DISKS[@]}" ]; then
+      SELECTED_DISK="${DISKS[$((DISK_NUMBER-1))]}"
+      break
+    fi
+    warn "Invalid selection. Try again."
+  done
+
+  echo "=== Partitions on $SELECTED_DISK ==="
+  # Format: NAME|SIZE|FSTYPE|MOUNTPOINT
+  mapfile -t PART_INFO < <(lsblk -nrpo NAME,SIZE,FSTYPE,MOUNTPOINT,TYPE "$SELECTED_DISK" | awk '$5=="part"{print $1 "|" $2 "|" $3 "|" $4}')
+  if [ ${#PART_INFO[@]} -eq 0 ]; then
+    error "No partitions found on $SELECTED_DISK. Create a partition first."
+    return 1
+  fi
+
+  i=1
+  local LINE PNAME PSIZE PFSTYPE PMOUNT
+  for LINE in "${PART_INFO[@]}"; do
+    IFS="|" read -r PNAME PSIZE PFSTYPE PMOUNT <<< "$LINE"
+    [ -z "$PFSTYPE" ] && PFSTYPE="unknown"
+    [ -z "$PMOUNT" ] && PMOUNT="-"
+    echo "[$i] $PNAME ($PSIZE) fstype=$PFSTYPE mount=$PMOUNT"
+    i=$((i+1))
+  done
+
+  local PART_NUMBER PARTITION
+  while true; do
+    read -rp "Select partition number: " PART_NUMBER
+    if [[ "$PART_NUMBER" =~ ^[0-9]+$ ]] && [ "$PART_NUMBER" -ge 1 ] && [ "$PART_NUMBER" -le "${#PART_INFO[@]}" ]; then
+      IFS="|" read -r PARTITION _ <<< "${PART_INFO[$((PART_NUMBER-1))]}"
+      break
+    fi
+    warn "Invalid selection. Try again."
+  done
+
+  if findmnt -rn --source "$PARTITION" >/dev/null 2>&1; then
+    warn "Partition $PARTITION is already mounted. Skipping."
+    findmnt --source "$PARTITION" || true
+    return 0
+  fi
+
+  # BitLocker detection
+  if sudo blkid "$PARTITION" 2>/dev/null | grep -iq "bitlocker"; then
+    warn "BitLocker detected on $PARTITION!"
+    install_if_missing dislocker fuse-dislocker
+
+    sudo mkdir -p /mnt/bitlocker /mnt/data
+
+    read -rsp "Enter BitLocker Password: " BL_PASS
+    echo
+
+    # Unlock
+    sudo dislocker -V "$PARTITION" -u"$BL_PASS" -- /mnt/bitlocker
+    sudo mount -o loop,uid="$USERID",gid="$GROUPID" /mnt/bitlocker/dislocker-file /mnt/data
+
+    info "Disk unlocked and mounted at /mnt/data"
+    warn "Note: BitLocker mounts usually require manual unlock after reboot."
+    return 0
+  fi
+
+  # Non-BitLocker: mount permanently via fstab
+  local FS_TYPE UUID MOUNT_NAME MOUNT_DIR OPTS FSTAB_TYPE
+
+  FS_TYPE="$(sudo blkid -s TYPE -o value "$PARTITION" 2>/dev/null || true)"
+  if [ -z "$FS_TYPE" ]; then
+    error "Could not detect filesystem type for $PARTITION."
+    return 1
+  fi
+
+  read -rp "Enter mount folder name (e.g. storage): " MOUNT_NAME
+  # Basic sanitization: keep only safe chars
+  MOUNT_NAME="$(echo "$MOUNT_NAME" | tr -cd '[:alnum:]_.-')"
+  if [ -z "$MOUNT_NAME" ]; then
+    error "Invalid mount folder name."
+    return 1
+  fi
+
+  MOUNT_DIR="/mnt/$MOUNT_NAME"
+  sudo mkdir -p "$MOUNT_DIR"
+
+  UUID="$(sudo blkid -s UUID -o value "$PARTITION")"
+  if [ -z "$UUID" ]; then
+    error "Could not read UUID for $PARTITION."
+    return 1
+  fi
+
+  # fstab type/opts
+  FSTAB_TYPE="$FS_TYPE"
+  if [[ "$FS_TYPE" == "ntfs" ]]; then
+    # Fedora uses kernel ntfs3 driver by default
+    FSTAB_TYPE="ntfs3"
+    OPTS="defaults,uid=$USERID,gid=$GROUPID,umask=000"
+  elif [[ "$FS_TYPE" == "vfat" || "$FS_TYPE" == "fat" || "$FS_TYPE" == "exfat" ]]; then
+    OPTS="defaults,uid=$USERID,gid=$GROUPID,umask=000"
+  else
+    OPTS="defaults"
+  fi
+
+  # Avoid duplicate fstab entries
+  if sudo grep -qE "^[^#].*UUID=$UUID" /etc/fstab; then
+    warn "An fstab entry for UUID=$UUID already exists. Skipping fstab append."
+  else
+    echo "UUID=$UUID $MOUNT_DIR $FSTAB_TYPE $OPTS 0 2" | sudo tee -a /etc/fstab >/dev/null
+    info "Added fstab entry for $PARTITION -> $MOUNT_DIR"
+  fi
+
+  sudo mount -a
+
+  # Ownership only makes sense on POSIX filesystems (not ntfs/vfat)
+  case "$FS_TYPE" in
+    ext2|ext3|ext4|xfs|btrfs)
+      sudo chown -R "$USERNAME:$USERNAME" "$MOUNT_DIR"
+      ;;
+    *)
+      ;;
+  esac
+
+  info "Disk $PARTITION mounted at $MOUNT_DIR"
+}
+
+
 # ============================================================
 # FINAL
 # ============================================================
