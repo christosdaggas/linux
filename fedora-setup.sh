@@ -64,6 +64,7 @@ fastestmirror=True
 max_parallel_downloads=10
 deltarpm=True
 keepcache=True
+installonly_limit=2
 EOL
   else
     info "DNF already optimized (fastestmirror entry exists)."
@@ -319,7 +320,7 @@ info "Updating system packages..."
 sudo dnf update -y
 
 # ----------- Group Installs --------
-CORE_PACKAGES=(openssl curl fontconfig xorg-x11-font-utils dnf5 dnf5-plugins glib2 dnf-plugins-core)
+CORE_PACKAGES=(openssl curl fontconfig xorg-x11-font-utils dnf5 dnf5-plugins glib2 dnf-plugins-core fuse fuse-libs)
 SECURITY_PACKAGES=(dnf-automatic fail2ban rkhunter lynis)
 TWEAK_PACKAGES=(gnome-color-manager zram-generator-defaults)
 PRODUCTIVITY_APPS=(filezilla flatseal decibels dconf-editor papers)
