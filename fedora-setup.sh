@@ -304,11 +304,9 @@ if ask_user "Install Flatpak user applications?"; then
     io.missioncenter.MissionCenter
     io.gitlab.news_flash.NewsFlash
     com.mattjakeman.ExtensionManager
-    org.gnome.Firmware
+    it.mijorus.gearlever
     org.gustavoperedo.FontDownloader
     io.github.flattool.Ignition
-    io.github.nate_xyz.Paleta
-    org.gnome.Papers
   )
   for a in "${APPS[@]}"; do flatpak install flathub "$a" || true; done
 fi
