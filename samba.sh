@@ -33,7 +33,7 @@ for DIR in "${DIRS[@]}"; do
     sudo restorecon -R -v "$DIR"
 done
 
-echo "Setting Samba password for $USER (00000000)..."
+echo "Setting Samba password for $USER (xxxxxx)..."
 echo -e "$PASS\n$PASS" | sudo smbpasswd -a "$USER" -s -e
 
 echo "Configuring complete smb.conf for developers..."
@@ -115,7 +115,7 @@ sudo firewall-cmd --permanent --add-service=samba --reload || true
 
 echo "✅ COMPLETE! Connect with:"
 echo "Username: $USER"
-echo "Password: 00000000"
+echo "Password: xxxxxx"
 echo "Server:   smb://$(hostname -I | awk '{print \$1}')"
 echo ""
 echo "Available shares: Development, Share, Backups, Docker, VMs"
