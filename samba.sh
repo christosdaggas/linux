@@ -50,10 +50,14 @@ if [ "$MODE" == "1" ]; then
 
     echo "--- Ρύθμιση SELinux & Firewall ---"
     sudo setsebool -P samba_export_all_rw 1
-    sudo firewall-cmd --permanent --add-service=samba --reload || true
+    # Χωρίζουμε τις εντολές του firewall για να μην χτυπάει σφάλμα
+    sudo firewall-cmd --permanent --add-service=samba
+    sudo firewall-cmd --reload
 
     echo "--- Ορισμός κωδικού Samba ---"
-    echo -e "$SMB_PASS\n$SMB_PASS" | sudo smbpasswd -a "$SMB_USER" -s -e
+    # Προσθέτουμε πρώτα τον χρήστη στο σύστημα αν δεν υπάρχει (για σιγουριά)
+    # και μετά τρέχουμε το smbpasswd
+    (echo "$SMB_PASS"; echo "$SMB_PASS") | sudo smbpasswd -a "$SMB_USER" -s
 
     echo "--- Παραμετροποίηση /etc/samba/smb.conf ---"
     sudo cp /etc/samba/smb.conf /etc/samba/smb.conf.bak 2>/dev/null || true
