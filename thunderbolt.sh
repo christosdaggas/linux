@@ -1,74 +1,124 @@
 #!/bin/bash
-# Enable Thunderbolt Networking on Fedora 43
-# Connect two PCs with Thunderbolt cable FIRST, then run this script
+# Complete Thunderbolt Networking Setup for Fedora 43
+# Includes ALL steps from geosp gist + Fedora NetworkManager compatibility
 
 set -e
 
-echo "🔥 Enabling Thunderbolt Networking on Fedora 43..."
+echo "🚀 Complete Thunderbolt Networking Setup for Fedora 43 (geosp Gist + Fedora NM)"
 
-# 1. Install and enable bolt (Thunderbolt device manager)
-sudo dnf install -y bolt
+# ========== PREREQUISITES ==========
+echo "📦 Installing required packages..."
+sudo dnf install -y bolt iperf3 NetworkManager-tui
+
+# ========== 1. ENABLE & START BOLT ==========
+echo "🔌 Enabling Bolt Thunderbolt manager..."
 sudo systemctl enable --now bolt
+sleep 2
 
-echo "✅ Bolt service enabled"
-echo "📡 Connect Thunderbolt cable between PCs and authorize devices..."
+# ========== 2. IOMMU + GRUB CONFIG ==========
+CPU_TYPE=$(lscpu | grep "Vendor ID" | awk '{print $3}')
+echo "🖥️  Detected CPU: $CPU_TYPE"
 
-# 2. Wait for Thunderbolt devices and auto-authorize
-sleep 3
-boltctl list
-echo "🔑 Authorizing ALL Thunderbolt devices (run as sudo)..."
-sudo boltctl authorize $(boltctl list | grep UUID | awk '{print $2}')
+if [[ "$CPU_TYPE" == *"GenuineIntel"* ]]; then
+    IOMMU="intel_iommu=on"
+elif [[ "$CPU_TYPE" == *"AuthenticAMD"* ]]; then
+    IOMMU="amd_iommu=on"
+else
+    IOMMU="iommu=pt"
+fi
 
-# 3. Load Thunderbolt networking module
-sudo modprobe thunderbolt_net
+echo "Configuring GRUB for IOMMU: $IOMMU..."
+sudo sed -i "s/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet\"/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet $IOMMU iommu=pt\"/" /etc/default/grub
+sudo grub2-mkconfig -o /boot/grub2/grub.cfg
+echo "✅ GRUB updated. REBOOT REQUIRED after script completes."
 
-# 4. Make module load on boot
+# ========== 3. THUNDERBOLT MODULES ==========
+echo "⚡ Loading Thunderbolt modules..."
+sudo modprobe thunderbolt thunderbolt_net
 echo "thunderbolt_net" | sudo tee /etc/modules-load.d/thunderbolt_net.conf
 
-# 5. Configure network interface (usually enp0s20f0u1 or eno3)
-echo "🌐 Waiting for Thunderbolt network interface..."
-sleep 5
+# ========== 4. PERSISTENT INTERFACE NAMING ==========
+echo "🔗 Creating persistent Thunderbolt interface (eno3)..."
+sudo mkdir -p /etc/systemd/network
+sudo bash -c 'cat > /etc/systemd/network/00-thunderbolt-eno3.link << EOF
+[Match]
+Driver=thunderbolt-net
 
-# Find Thunderbolt interface
-TB_IFACE=$(ip link show | grep -i thunderbolt | awk '{print $2}' | sed 's/:$//' | head -1)
-if [ -z "$TB_IFACE" ]; then
-    TB_IFACE=$(ip link | grep -E 'en[x01]?\w+' | tail -1 | awk '{print $2}' | sed 's/:$//')
-fi
+[Link]
+Name=eno3
+MACAddressPolicy=none
+EOF'
 
-if [ -n "$TB_IFACE" ]; then
-    echo "📶 Found Thunderbolt interface: $TB_IFACE"
-    
-    # Bring up interface
-    sudo ip link set "$TB_IFACE" up
-    
-    # Configure static IP for direct PC-PC connection (10Gbps!)
-    sudo ip addr add 192.168.100.1/24 dev "$TB_IFACE"
-    
-    echo "✅ Interface $TB_IFACE configured: 192.168.100.1/24"
-else
-    echo "⚠️  No Thunderbolt interface found. Check cable connection."
-    echo "    Run 'boltctl list' and 'ip link' to troubleshoot."
-fi
+# Reload udev rules
+sudo udevadm control --reload
+sudo udevadm trigger --subsystem-match=net
 
-# 6. Enable IP forwarding for advanced networking (optional)
-sudo sysctl -w net.ipv4.ip_forward=1
-echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.d/99-thunderbolt.conf
+# ========== 5. AUTHORIZE THUNDERBOLT DEVICES ==========
+echo "📡 Connect Thunderbolt cable NOW and press Enter..."
+read -r
+boltctl list
+echo "🔑 Auto-authorizing ALL Thunderbolt devices..."
+sudo boltctl authorize 0 || true  # Authorize first device
+sleep 3
 
-# 7. Firewall: Allow Thunderbolt traffic
-sudo firewall-cmd --permanent --add-interface="$TB_IFACE" --zone=internal
+# Wait for interface
+echo "⏳ Waiting for Thunderbolt interface..."
+for i in {1..30}; do
+    if ip link show eno3 &>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+
+# ========== 6. SYSTEMD SERVICE FOR RELIABLE STARTUP ==========
+echo "⚙️  Creating thunderbolt-up.service (geosp method)..."
+sudo bash -c 'cat > /etc/systemd/system/thunderbolt-up.service << EOF
+[Unit]
+Description=Thunderbolt Networking Interface
+After=systemd-udev-settle.service NetworkManager.service bolt.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/bash -c "while ! ip link show eno3 > /dev/null 2>&1; do sleep 1; done"
+ExecStart=/usr/bin/nmcli con add type ethernet ifname eno3 con-name thunderbolt-net ipv4.method manual ipv4.addresses 10.0.1.1/24 ipv4.gateway "" autoconnect yes
+ExecStart=/usr/sbin/ip link set eno3 up
+
+[Install]
+WantedBy=multi-user.target
+EOF'
+
+sudo systemctl daemon-reload
+sudo systemctl enable thunderbolt-up.service
+
+# ========== 7. FIREWALL & FORWARDING ==========
+echo "🛡️ Configuring firewall..."
+sudo firewall-cmd --permanent --add-interface=eno3 --zone=internal
+sudo firewall-cmd --permanent --add-port=5201/tcp  # iperf3
 sudo firewall-cmd --reload
 
-echo "🎉 THUNDERBOLT NETWORKING ENABLED!"
+# IP forwarding
+echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-thunderbolt.conf
+sudo sysctl -p /etc/sysctl.d/99-thunderbolt.conf
+
+# ========== 8. SELINUX (Fedora 43) ==========
+sudo setsebool -P thunderbolt_enable_user 1 2>/dev/null || true
+
+echo "🎉 THUNDERBOLT NETWORKING SETUP COMPLETE!"
 echo ""
-echo "📋 STATUS:"
-echo "   Interface: $TB_IFACE"
-echo "   IP:        192.168.100.1/24"
-echo "   Speed:     Up to 40Gbps!"
+echo "📋 SUMMARY:"
+echo "   Interface: eno3 (10.0.1.1/24)"
+echo "   Service:   thunderbolt-up.service"
+echo "   REBOOT:    REQUIRED for IOMMU"
 echo ""
-echo "🔍 VERIFY:"
-echo "   ping 192.168.100.2          # Other PC"
-echo "   iperf3 -s                   # Speed test server"
-echo "   boltctl list                # Thunderbolt status"
-echo "   ip link show $TB_IFACE      # Interface status"
+echo "✅ CURRENT STATUS:"
+ip addr show eno3 2>/dev/null || echo "   eno3 not ready yet - normal after cable connect"
+boltctl list
 echo ""
-echo "💡 On OTHER PC, run: ip addr add 192.168.100.2/24 dev [interface]"
+echo "🚀 TEST (after reboot + cable connect):"
+echo "   # PC1: iperf3 -s"
+echo "   # PC2: iperf3 -c 10.0.1.1"
+echo ""
+echo "💾 Save as thunderbolt-setup-fedora.sh && chmod +x && sudo ./thunderbolt-setup-fedora.sh"
+echo "🔄 REBOOT when prompted, connect cable, then test!"
