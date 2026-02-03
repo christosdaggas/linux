@@ -355,15 +355,36 @@ if ask_user "Install Flatpak user applications?"; then
   for a in "${APPS[@]}"; do flatpak install flathub "$a" || true; done
 fi
 
+if ask_user "Enable automatic Flatpak updates?"; then
+  systemctl --user enable --now flatpak-system-helper.timer
+fi
+
+
 # ============================================================
-# CLI / AI / SECURITY
+# CLI /  SECURITY
 # ============================================================
 ask_user "Install CLI tools (fzf, bat, ripgrep)?" && install_if_missing fzf bat ripgrep
 if ask_user "Install USBGuard?"; then install_if_missing usbguard; sudo systemctl enable --now usbguard; fi
-if ask_user "Install Ollama?"; then
-  install_if_missing curl
-  curl -fsSL https://ollama.com/install.sh -o /tmp/ollama.sh
-  bash /tmp/ollama.sh || true
+
+# ============================================================
+# DEV Options
+# ============================================================
+if ask_user "Increase file watcher limits (dev-friendly)?"; then
+  sudo tee /etc/sysctl.d/99-dev.conf >/dev/null <<'EOF'
+fs.inotify.max_user_watches=524288
+fs.inotify.max_user_instances=1024
+EOF
+  sudo sysctl --system
+fi
+
+if ask_user "Improve Bash defaults (history, colors, completion)?"; then
+  grep -q "HISTSIZE=10000" ~/.bashrc || cat >> ~/.bashrc <<'EOF'
+HISTSIZE=10000
+HISTFILESIZE=20000
+shopt -s histappend
+bind '"\e[A": history-search-backward'
+bind '"\e[B": history-search-forward'
+EOF
 fi
 
 # ============================================================
