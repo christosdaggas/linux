@@ -294,6 +294,46 @@ if ask_user "Install GNOME Shell extensions?"; then
 fi
 
 # ============================================================
+# GNOME TEMPLATES (Right-click → New Document)
+# ============================================================
+if ask_user "Add GNOME Templates (Text, Markdown, HTML)?"; then
+  TEMPLATES_DIR="$HOME/Templates"
+
+  info "Creating GNOME Templates in $TEMPLATES_DIR"
+  mkdir -p "$TEMPLATES_DIR"
+
+  # Text template
+  touch "$TEMPLATES_DIR/Text Document.txt"
+
+  # Markdown template with starter content
+  cat <<'EOF' > "$TEMPLATES_DIR/Markdown.md"
+# Title
+
+Write here...
+EOF
+
+  # HTML template with boilerplate
+  cat <<'EOF' > "$TEMPLATES_DIR/HTML Document.html"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Document</title>
+</head>
+<body>
+
+</body>
+</html>
+EOF
+
+  # Restart Nautilus so templates appear immediately
+  nautilus -q || true
+
+  info "GNOME New Document templates added"
+fi
+
+
+# ============================================================
 # FLATPAK APPS
 # ============================================================
 if ask_user "Install Flatpak user applications?"; then
