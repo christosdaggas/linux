@@ -260,6 +260,10 @@ if ask_user "Apply GNOME UI tweaks?"; then
   safe_gsettings_set org.gnome.nautilus.preferences always-use-location-entry true
   safe_gsettings_set org.gnome.nautilus.preferences recursive-search 'never'
   safe_gsettings_set org.gnome.mutter experimental-features "['scale-monitor-framebuffer']"
+  safe_gsettings_set org.gnome.desktop.interface clock-show-seconds true
+  safe_gsettings_set org.gnome.desktop.interface show-battery-percentage true
+  safe_gsettings_set org.gnome.desktop.peripherals.touchpad tap-to-click true
+  safe_gsettings_set org.gnome.desktop.peripherals.touchpad natural-scroll true
 fi
 
 # ============================================================
