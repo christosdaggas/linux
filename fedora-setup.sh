@@ -296,15 +296,7 @@ if ask_user "Install Docker & Whaler?"; then
 fi
 
 
-# --- Microsoft Fonts (LPF) ---
-if ask_user "Install Microsoft Fonts via LPF?"; then
-  ensure_rpmfusion
-  install_if_missing lpf lpf-mscore-fonts lpf-cleartype-fonts fontconfig
-  sudo -u "${SUDO_USER:-$USER}" -H lpf update || warn "LPF failed"
-  sudo fc-cache -rv
-fi
-
-# --- Microsoft Fonts (Legacy RPM) ---
+# --- Microsoft Fonts ---
 if ask_user "Install Microsoft Core Fonts via legacy RPM?"; then
   cd /tmp
   install_if_missing curl cabextract fontconfig
