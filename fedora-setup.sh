@@ -610,10 +610,43 @@ setup_secondary_disk() {
     awk '$5=="part"{print $1 "|" $2 "|" $3 "|" $4}'
   )
 
-  if [ ${#PART_INFO[@]} -eq 0 ]; then
-    error "No partitions found on $SELECTED_DISK."
+if [ ${#PART_INFO[@]} -eq 0 ]; then
+  warn "No partitions found on $SELECTED_DISK."
+
+  if ! ask_user "Do you want to create a new partition on $SELECTED_DISK? THIS WILL ERASE DATA"; then
+    warn "Partition creation skipped."
     return 1
   fi
+
+  echo "Choose filesystem for the new partition:"
+  select FS_CHOICE in ext4 xfs btrfs ntfs; do
+    case "$FS_CHOICE" in
+      ext4|xfs|btrfs|ntfs) break ;;
+      *) echo "Invalid choice";;
+    esac
+  done
+
+  info "Creating GPT partition table on $SELECTED_DISK"
+  sudo parted -s "$SELECTED_DISK" mklabel gpt
+  sudo parted -s "$SELECTED_DISK" mkpart primary 0% 100%
+
+  info "Informing kernel of partition changes"
+  sudo partprobe "$SELECTED_DISK"
+  sleep 2
+
+  PARTITION="${SELECTED_DISK}1"
+
+  info "Formatting $PARTITION as $FS_CHOICE"
+  case "$FS_CHOICE" in
+    ext4) sudo mkfs.ext4 -F "$PARTITION" ;;
+    xfs) sudo mkfs.xfs -f "$PARTITION" ;;
+    btrfs) sudo mkfs.btrfs -f "$PARTITION" ;;
+    ntfs) sudo mkfs.ntfs -f "$PARTITION" ;;
+  esac
+
+  PART_INFO=("$PARTITION|$(lsblk -dnbo SIZE "$PARTITION")|$FS_CHOICE|")
+fi
+
 
   i=1
   for LINE in "${PART_INFO[@]}"; do
