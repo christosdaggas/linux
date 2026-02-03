@@ -358,23 +358,45 @@ if ask_user "Install GNOME Shell extensions?"; then
     [19]="user-theme@gnome-shell-extensions.gcampax.github.com"
   )
 
-  SHELL_VERSION="$(gnome-shell --version | awk '{print $3}')"
+  # ----------------------------------------------------------
+  # extensions.gnome.org API lags GNOME releases
+  # GNOME 49 → query as GNOME 48 (forward compatible)
+  # ----------------------------------------------------------
+  RAW_VERSION="$(gnome-shell --version | awk '{print $3}')"
+  MAJOR_VERSION="${RAW_VERSION%%.*}"
+
+  if (( MAJOR_VERSION >= 49 )); then
+    SHELL_VERSION=48
+  else
+    SHELL_VERSION="$MAJOR_VERSION"
+  fi
+
+  info "Detected GNOME $RAW_VERSION → querying extensions as GNOME $SHELL_VERSION"
 
   for ID in "${!EXT[@]}"; do
     UUID="${EXT[$ID]}"
-    INFO="$(curl -fsSL "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION" || true)"
+
+    INFO="$(curl -fsSL \
+      "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION" \
+      || true)"
+
     URL="$(jq -r '.download_url // empty' <<<"$INFO")"
 
-    [ -z "$URL" ] && continue
+    if [[ -z "$URL" ]]; then
+      warn "Skipping $UUID (no compatible release reported)"
+      continue
+    fi
 
     ZIP="/tmp/$UUID.zip"
     curl -fsSL -o "$ZIP" "https://extensions.gnome.org$URL"
     unzip -oq "$ZIP" -d "$EXT_DIR/$UUID"
     rm -f "$ZIP"
 
-    [ -d "$EXT_DIR/$UUID/schemas" ] && glib-compile-schemas "$EXT_DIR/$UUID/schemas"
+    if [[ -d "$EXT_DIR/$UUID/schemas" ]]; then
+      glib-compile-schemas "$EXT_DIR/$UUID/schemas"
+    fi
 
-    gnome-extensions enable "$UUID" || true
+    gnome-extensions enable "$UUID" || warn "Could not enable $UUID (login/restart may be required)"
   done
 fi
 
