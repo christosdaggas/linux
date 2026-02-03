@@ -342,8 +342,11 @@ fi
 # GNOME EXTENSIONS
 # ============================================================
 if ask_user "Install GNOME Shell extensions?"; then
-  install_if_missing jq unzip gnome-extensions gnome-shell-extension-prefs
-  EXT_DIR="$HOME/.local/share/gnome-shell/extensions"; mkdir -p "$EXT_DIR"
+  install_if_missing jq unzip gnome-extensions gnome-extensions-app
+
+  EXT_DIR="$HOME/.local/share/gnome-shell/extensions"
+  mkdir -p "$EXT_DIR"
+
   declare -A EXT=(
     [307]="dash-to-dock@micxgx.gmail.com"
     [1160]="dash-to-panel@jderose9.github.com"
@@ -354,20 +357,27 @@ if ask_user "Install GNOME Shell extensions?"; then
     [2087]="ding@rastersoft.com"
     [19]="user-theme@gnome-shell-extensions.gcampax.github.com"
   )
-  SHELL_VERSION=$(gnome-shell --version | awk '{print $3}')
+
+  SHELL_VERSION="$(gnome-shell --version | awk '{print $3}')"
+
   for ID in "${!EXT[@]}"; do
     UUID="${EXT[$ID]}"
-    INFO=$(curl -s "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION")
-    URL=$(jq -r '.download_url' <<<"$INFO")
-    [[ "$URL" == "null" ]] && continue
+    INFO="$(curl -fsSL "https://extensions.gnome.org/extension-info/?pk=$ID&shell_version=$SHELL_VERSION" || true)"
+    URL="$(jq -r '.download_url // empty' <<<"$INFO")"
+
+    [ -z "$URL" ] && continue
+
     ZIP="/tmp/$UUID.zip"
-    curl -L -o "$ZIP" "https://extensions.gnome.org$URL"
-    unzip -o "$ZIP" -d "$EXT_DIR/$UUID"
+    curl -fsSL -o "$ZIP" "https://extensions.gnome.org$URL"
+    unzip -oq "$ZIP" -d "$EXT_DIR/$UUID"
     rm -f "$ZIP"
-    [[ -d "$EXT_DIR/$UUID/schemas" ]] && glib-compile-schemas "$EXT_DIR/$UUID/schemas"
+
+    [ -d "$EXT_DIR/$UUID/schemas" ] && glib-compile-schemas "$EXT_DIR/$UUID/schemas"
+
     gnome-extensions enable "$UUID" || true
   done
 fi
+
 
 # ============================================================
 # GNOME TEMPLATES (Right-click → New Document)
