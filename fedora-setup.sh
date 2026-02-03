@@ -108,6 +108,68 @@ ask_user "Install TWEAK packages?" && install_if_missing "${TWEAK_PACKAGES[@]}"
 ask_user "Install PRODUCTIVITY apps?" && install_if_missing "${PRODUCTIVITY_APPS[@]}"
 
 # ============================================================
+# SPEED & PERFORMANCE OPTIMIZATIONS (ONE-CLICK)
+# ============================================================
+if ask_user "Apply system-wide speed & performance optimizations?"; then
+  info "Applying speed and performance optimizations..."
+
+  # --- Faster boot & shutdown ---
+  sudo mkdir -p /etc/systemd/system.conf.d
+  sudo tee /etc/systemd/system.conf.d/timeout.conf >/dev/null <<'EOF'
+[Manager]
+DefaultTimeoutStartSec=10s
+DefaultTimeoutStopSec=10s
+EOF
+
+  # --- Reduce swap aggressiveness ---
+  sudo tee /etc/sysctl.d/99-swappiness.conf >/dev/null <<'EOF'
+vm.swappiness=10
+EOF
+
+  # --- Increase file watcher limits (dev / IDE friendly) ---
+  sudo tee /etc/sysctl.d/99-inotify.conf >/dev/null <<'EOF'
+fs.inotify.max_user_watches=524288
+fs.inotify.max_user_instances=1024
+EOF
+
+  sudo sysctl --system
+
+  # --- Disable GNOME Tracker (huge IO + CPU win) ---
+  systemctl --user mask \
+    tracker-miner-fs-3.service \
+    tracker-extract-3.service \
+    tracker-miner-rss-3.service 2>/dev/null || true
+
+  # --- Disable PackageKit background activity ---
+  sudo systemctl disable --now packagekit.service packagekit.socket 2>/dev/null || true
+
+  # --- Disable GNOME Software autostart ---
+  mkdir -p ~/.config/autostart
+  if [ -f /etc/xdg/autostart/org.gnome.Software.desktop ]; then
+    cp /etc/xdg/autostart/org.gnome.Software.desktop ~/.config/autostart/
+    sed -i 's/^X-GNOME-Autostart-enabled=.*/X-GNOME-Autostart-enabled=false/' \
+      ~/.config/autostart/org.gnome.Software.desktop
+  fi
+
+  # --- Disable UI animations (snappier feel) ---
+  gsettings set org.gnome.desktop.interface enable-animations false
+
+  # --- GNOME usability speed wins ---
+  gsettings set org.gnome.desktop.interface clock-show-seconds true
+  gsettings set org.gnome.desktop.interface show-battery-percentage true
+
+  # --- Ensure zram is enabled (Fedora default, but enforce) ---
+  sudo systemctl enable --now zram-generator-defaults 2>/dev/null || true
+
+  # --- Enable persistent system logs (helps debugging slow boots) ---
+  sudo mkdir -p /var/log/journal
+  sudo systemctl restart systemd-journald
+
+  info "Speed & performance optimizations applied"
+fi
+
+
+# ============================================================
 # FIREWALL / SNAPD
 # ============================================================
 ask_user "Set firewall default zone to home?" && sudo firewall-cmd --set-default-zone=home || true
