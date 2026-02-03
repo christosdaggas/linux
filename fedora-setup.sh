@@ -440,13 +440,13 @@ EOF
   info "GNOME New Document templates added"
 fi
 
-
 # ============================================================
 # FLATPAK APPS
 # ============================================================
 if ask_user "Install Flatpak user applications?"; then
   install_if_missing flatpak
   flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
   APPS=(
     org.signal.Signal
     io.missioncenter.MissionCenter
@@ -456,11 +456,10 @@ if ask_user "Install Flatpak user applications?"; then
     org.gustavoperedo.FontDownloader
     io.github.flattool.Ignition
   )
-  for a in "${APPS[@]}"; do flatpak install flathub "$a" || true; done
-fi
 
-if ask_user "Enable automatic Flatpak updates?"; then
-  systemctl --user enable --now flatpak-system-helper.timer
+  for a in "${APPS[@]}"; do
+    flatpak install -y --noninteractive flathub "$a" || true
+  done
 fi
 
 
