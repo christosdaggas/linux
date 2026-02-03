@@ -267,16 +267,34 @@ ask_user "Install Git & Gitg?" && install_if_missing git gitg
 
 # --- Docker + Whaler ---
 if ask_user "Install Docker & Whaler?"; then
-  install_if_missing dnf-plugins-core
-  sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
-  install_if_missing docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  # Ensure dnf5 plugins
+  install_if_missing dnf5-plugins
+
+  # Add Docker repository (dnf5 syntax)
+  sudo dnf5 config-manager addrepo \
+    --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo
+
+  # Install Docker packages
+  install_if_missing \
+    docker-ce \
+    docker-ce-cli \
+    containerd.io \
+    docker-buildx-plugin \
+    docker-compose-plugin
+
+  # Enable Docker
   ask_user "Enable Docker service?" && sudo systemctl enable --now docker
+
+  # Docker group
   sudo getent group docker >/dev/null || sudo groupadd docker
   sudo usermod -aG docker "${SUDO_USER:-$USER}"
+
+  # Whaler (Flatpak)
   install_if_missing flatpak
   flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-  flatpak install flathub com.github.sdv43.whaler
+  flatpak install -y flathub com.github.sdv43.whaler
 fi
+
 
 # --- Microsoft Fonts (LPF) ---
 if ask_user "Install Microsoft Fonts via LPF?"; then
