@@ -1,6 +1,5 @@
 #!/bin/bash
 # Complete Thunderbolt Networking Setup for Fedora 43
-# Includes ALL steps from geosp gist + Fedora NetworkManager compatibility
 
 set -e
 
