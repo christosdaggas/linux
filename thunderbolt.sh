@@ -34,8 +34,8 @@ echo "✅ GRUB updated. REBOOT REQUIRED after script completes."
 
 # ========== 3. THUNDERBOLT MODULES ==========
 echo "⚡ Loading Thunderbolt modules..."
-sudo modprobe thunderbolt thunderbolt_net
-echo "thunderbolt_net" | sudo tee /etc/modules-load.d/thunderbolt_net.conf
+sudo modprobe thunderbolt thunderbolt-net
+echo -e "thunderbolt\nthunderbolt-net" | sudo tee /etc/modules-load.d/thunderbolt.conf
 
 # ========== 4. PERSISTENT INTERFACE NAMING ==========
 echo "🔗 Creating persistent Thunderbolt interface (eno3)..."
@@ -49,7 +49,7 @@ Name=eno3
 MACAddressPolicy=none
 EOF'
 
-# Reload udev rules
+# Reload udev rules to apply the new interface name
 sudo udevadm control --reload
 sudo udevadm trigger --subsystem-match=net
 
@@ -61,7 +61,7 @@ echo "🔑 Auto-authorizing ALL Thunderbolt devices..."
 sudo boltctl authorize 0 || true  # Authorize first device
 sleep 3
 
-# Wait for interface
+# Wait for the interface to come up
 echo "⏳ Waiting for Thunderbolt interface..."
 for i in {1..30}; do
     if ip link show eno3 &>/dev/null; then
@@ -98,7 +98,7 @@ sudo firewall-cmd --permanent --add-interface=eno3 --zone=internal
 sudo firewall-cmd --permanent --add-port=5201/tcp  # iperf3
 sudo firewall-cmd --reload
 
-# IP forwarding
+# Enable IP forwarding
 echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-thunderbolt.conf
 sudo sysctl -p /etc/sysctl.d/99-thunderbolt.conf
 
