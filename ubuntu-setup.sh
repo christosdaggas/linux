@@ -58,7 +58,9 @@ require_ubuntu(){
 # -----------------------------
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
+export DEBIAN_PRIORITY=critical
 APT_UPDATED=0
+SNAP_DISABLED=0
 
 wait_for_apt(){
   local locks=(
@@ -96,8 +98,16 @@ pkg_available(){
   apt-cache show "$1" >/dev/null 2>&1
 }
 
-install_if_missing(){
-  local miss=() unavailable=() p
+apt_install_missing(){
+  local apt_opts=() miss=() unavailable=() p
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --) shift; break ;;
+      *) apt_opts+=("$1"); shift ;;
+    esac
+  done
+
   (( APT_UPDATED == 1 )) || refresh_apt
   for p in "$@"; do
     pkg_installed "$p" && continue
@@ -115,7 +125,15 @@ install_if_missing(){
   (( ${#miss[@]} == 0 )) && return 0
   info "Installing: ${miss[*]}"
   wait_for_apt
-  sudo apt-get install -y "${miss[@]}"
+  sudo apt-get install -y "${apt_opts[@]}" "${miss[@]}"
+}
+
+install_if_missing(){
+  apt_install_missing -- "$@"
+}
+
+install_if_missing_no_recommends(){
+  apt_install_missing --no-install-recommends -- "$@"
 }
 
 remove_if_installed(){
@@ -221,6 +239,35 @@ EOFDK
   refresh_apt
 }
 
+setup_firefox_mozilla_repo(){
+  ensure_base_apt_tools
+  ensure_directory /etc/apt/keyrings
+  wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O- |     sudo tee /etc/apt/keyrings/packages.mozilla.org.asc >/dev/null
+  sudo chmod 0644 /etc/apt/keyrings/packages.mozilla.org.asc
+
+  sudo tee /etc/apt/sources.list.d/mozilla.list >/dev/null <<'EOFFX'
+deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main
+EOFFX
+
+  sudo tee /etc/apt/preferences.d/mozilla >/dev/null <<'EOFPIN'
+Package: *
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000
+EOFPIN
+
+  refresh_apt
+}
+
+install_firefox_deb_from_mozilla(){
+  setup_firefox_mozilla_repo
+  wait_for_apt
+  sudo apt-get install -y firefox
+  if pkg_available firefox-l10n-el; then
+    wait_for_apt
+    sudo apt-get install -y firefox-l10n-el || true
+  fi
+}
+
 install_chrome_from_deb(){
   local arch tmpdeb
   arch="$(dpkg --print-architecture)"
@@ -268,6 +315,58 @@ configure_ufw(){
 ensure_flathub(){
   install_if_missing flatpak
   flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+}
+
+remove_all_snaps(){
+  command_exists snap || return 0
+  local pass changed name
+
+  for pass in {1..8}; do
+    changed=0
+    while read -r name; do
+      [[ -z "$name" || "$name" == "Name" || "$name" == "snapd" ]] && continue
+      if sudo snap remove --purge "$name" >/dev/null 2>&1; then
+        info "Removed snap: $name"
+        changed=1
+      fi
+    done < <(snap list 2>/dev/null | awk 'NR>1 {print $1}' || true)
+    (( changed == 0 )) && break
+  done
+
+  if snap list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx 'snapd'; then
+    sudo snap remove --purge snapd >/dev/null 2>&1 || true
+  fi
+}
+
+prevent_snapd_reinstall(){
+  sudo tee /etc/apt/preferences.d/no-snapd.pref >/dev/null <<'EOFNOSNAP'
+Package: snapd
+Pin: version *
+Pin-Priority: -10
+EOFNOSNAP
+}
+
+disable_snapd_and_prefer_deb(){
+  local purge_pkgs=() p
+
+  if command_exists snap; then
+    remove_all_snaps
+  fi
+
+  for p in snapd gnome-software-plugin-snap; do
+    pkg_installed "$p" && purge_pkgs+=("$p")
+  done
+  if (( ${#purge_pkgs[@]} > 0 )); then
+    wait_for_apt
+    sudo apt-get purge -y "${purge_pkgs[@]}"
+  fi
+
+  sudo systemctl disable --now snapd.service snapd.socket snapd.seeded.service 2>/dev/null || true
+  sudo rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd
+  rm -rf "$HOME/snap"
+  prevent_snapd_reinstall
+  SNAP_DISABLED=1
+  info "Snap support disabled and snapd pinned to prevent reinstall"
 }
 
 # -----------------------------
@@ -518,7 +617,7 @@ CORE_PACKAGES=(
   software-properties-common apt-transport-https command-not-found ubuntu-drivers-common
 )
 SECURITY_PACKAGES=(
-  unattended-upgrades fail2ban rkhunter lynis apparmor apparmor-utils
+  unattended-upgrades fail2ban lynis apparmor apparmor-utils rkhunter
 )
 TWEAK_PACKAGES=(
   gnome-color-manager zram-tools
@@ -528,7 +627,10 @@ PRODUCTIVITY_APPS=(
 )
 
 ask_user "Install CORE packages?" && install_if_missing "${CORE_PACKAGES[@]}"
-ask_user "Install SECURITY packages?" && install_if_missing "${SECURITY_PACKAGES[@]}"
+if ask_user "Install SECURITY packages (safe mode: no recommended mail server packages)?"; then
+  install_if_missing unattended-upgrades fail2ban lynis apparmor apparmor-utils
+  install_if_missing_no_recommends rkhunter
+fi
 ask_user "Install TWEAK packages?" && install_if_missing "${TWEAK_PACKAGES[@]}"
 ask_user "Install PRODUCTIVITY apps?" && install_if_missing "${PRODUCTIVITY_APPS[@]}"
 
@@ -616,13 +718,18 @@ fi
 # -----------------------------
 # SNAP / BTRFS / APPARMOR INFO
 # -----------------------------
-if ask_user "Enable snapd support?"; then
+if ask_user "Disable Snap completely and prefer deb/apt packages?"; then
+  disable_snapd_and_prefer_deb
+  if ask_user "Install Firefox .deb from Mozilla APT repo?"; then
+    install_firefox_deb_from_mozilla
+  fi
+elif ask_user "Enable snapd support?"; then
   install_if_missing snapd
   sudo systemctl enable --now snapd.socket
   sudo ln -sf /var/lib/snapd/snap /snap
 fi
 
-if ask_user "Remove unwanted Snap apps?"; then
+if (( SNAP_DISABLED == 0 )) && ask_user "Remove unwanted Snap apps?"; then
   if command_exists snap; then
     snap list 2>/dev/null | awk 'NR>1 {print $1}' | while read -r s; do
       case "$s" in
