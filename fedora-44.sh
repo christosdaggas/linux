@@ -42,17 +42,26 @@ timestamp(){ date +%F_%H-%M-%S; }
 
 backup_file(){
   local f="$1"
-  [[ -f "$f" ]] && sudo cp -a "$f" "$f.bak.$(timestamp)"
+  if [[ -f "$f" ]]; then
+    sudo cp -a "$f" "$f.bak.$(timestamp)"
+  fi
+  return 0
 }
 
 backup_dir(){
   local d="$1"
-  [[ -d "$d" ]] && cp -a "$d" "$d.bak.$(timestamp)"
+  if [[ -d "$d" ]]; then
+    cp -a "$d" "$d.bak.$(timestamp)"
+  fi
+  return 0
 }
 
 backup_user_file(){
   local f="$1"
-  [[ -f "$f" ]] && cp -a "$f" "$f.bak.$(timestamp)"
+  if [[ -f "$f" ]]; then
+    cp -a "$f" "$f.bak.$(timestamp)"
+  fi
+  return 0
 }
 
 confirm_text(){
@@ -92,7 +101,7 @@ pkg_available(){
 }
 
 install_if_missing(){
-  local missing=() installable=() skipped=() failed=() p
+  local missing=() failed=() p
 
   for p in "$@"; do
     pkg_installed "$p" || missing+=("$p")
@@ -100,24 +109,16 @@ install_if_missing(){
 
   (( ${#missing[@]} == 0 )) && return 0
 
-  for p in "${missing[@]}"; do
-    if pkg_available "$p"; then
-      installable+=("$p")
-    else
-      skipped+=("$p")
-    fi
-  done
-
-  (( ${#skipped[@]} > 0 )) && warn "Skipping unavailable packages: ${skipped[*]}"
-  (( ${#installable[@]} == 0 )) && return 0
-
-  info "Installing: ${installable[*]}"
-  if sudo "$DNF_BIN" install -y "${installable[@]}"; then
+  # Do not run repoquery for every package. On systems with a broken enabled
+  # repo, repeated repoquery calls can look like a freeze. Try one normal DNF
+  # transaction first; if it fails, retry package-by-package and continue.
+  info "Installing: ${missing[*]}"
+  if sudo "$DNF_BIN" install -y "${missing[@]}"; then
     return 0
   fi
 
   warn "Batch install failed. Retrying packages one by one so the script can continue and show the exact failing package."
-  for p in "${installable[@]}"; do
+  for p in "${missing[@]}"; do
     if pkg_installed "$p"; then
       continue
     fi
@@ -203,11 +204,152 @@ current_user(){
   echo "$u"
 }
 
+find_rawhide_repo_files(){
+  local dirs=() f
+  [[ -d /etc/yum.repos.d ]] && dirs+=(/etc/yum.repos.d)
+  [[ -d /etc/dnf/repos.d ]] && dirs+=(/etc/dnf/repos.d)
+  (( ${#dirs[@]} == 0 )) && return 0
+
+  while IFS= read -r -d '' f; do
+    if grep -Eiq 'rawhide|development/rawhide' "$f" 2>/dev/null &&        grep -Eiq '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*(1|yes|true)[[:space:]]*$' "$f" 2>/dev/null; then
+      printf '%s\n' "$f"
+    fi
+  done < <(find "${dirs[@]}" -type f -name '*.repo' -print0 2>/dev/null)
+}
+
+disable_rawhide_repo_files(){
+  local f files=()
+  mapfile -t files < <(find_rawhide_repo_files)
+  (( ${#files[@]} == 0 )) && return 0
+
+  warn "Disabling Rawhide/development repository files:"
+  for f in "${files[@]}"; do
+    echo "  - $f"
+    backup_file "$f"
+    sudo sed -i 's/^[[:space:]]*enabled[[:space:]]*=.*/enabled=0/I' "$f"
+  done
+
+  sudo "$DNF_BIN" clean metadata || true
+  info "Rawhide/development repos disabled and DNF metadata cache cleaned."
+}
+
+check_rawhide_repos(){
+  local files=()
+  mapfile -t files < <(find_rawhide_repo_files)
+  (( ${#files[@]} == 0 )) && return 0
+
+  warn "Rawhide/development repository definitions were found on this system."
+  warn "This script targets Fedora 44 stable. Enabled Rawhide repos can break or stall DNF metadata refreshes."
+  printf 'Detected repo files:\n'
+  printf '  %s\n' "${files[@]}"
+  if ask_user "Disable Rawhide/development repo files before continuing?"; then
+    disable_rawhide_repo_files
+  else
+    warn "Continuing with Rawhide/development repos present. DNF operations may fail or appear stuck."
+  fi
+}
+
+dnf_makecache(){
+  local refresh="${1:-}"
+  if command -v timeout >/dev/null 2>&1; then
+    if [[ "$refresh" == "--refresh" ]]; then
+      sudo timeout 300 "$DNF_BIN" makecache --refresh -y
+    else
+      sudo timeout 300 "$DNF_BIN" makecache -y
+    fi
+  else
+    if [[ "$refresh" == "--refresh" ]]; then
+      sudo "$DNF_BIN" makecache --refresh -y
+    else
+      sudo "$DNF_BIN" makecache -y
+    fi
+  fi
+}
+
+install_optional_packages(){
+  local missing=() p
+  for p in "$@"; do
+    pkg_installed "$p" || missing+=("$p")
+  done
+  (( ${#missing[@]} == 0 )) && return 0
+
+  info "Installing optional packages if available: ${missing[*]}"
+  if sudo "$DNF_BIN" install -y --skip-unavailable "${missing[@]}"; then
+    return 0
+  fi
+
+  warn "Optional package transaction failed. Retrying one by one."
+  for p in "${missing[@]}"; do
+    pkg_installed "$p" && continue
+    sudo "$DNF_BIN" install -y --skip-unavailable "$p" || warn "Optional package unavailable or failed: $p"
+  done
+}
+
+ensure_tailscale_repo(){
+  sudo tee /etc/yum.repos.d/tailscale.repo >/dev/null <<'TAILSCALE_REPO'
+[tailscale-stable]
+name=Tailscale stable
+baseurl=https://pkgs.tailscale.com/stable/fedora/$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+TAILSCALE_REPO
+}
+
+remove_legacy_duplicate_inotify_conf(){
+  # Older versions of this script wrote the same inotify settings to
+  # /etc/sysctl.d/99-dev.conf. Remove that duplicate when it only contains
+  # the old watcher limits, so sysctl output is no longer repeated.
+  local f=/etc/sysctl.d/99-dev.conf
+  [[ -f "$f" ]] || return 0
+  if grep -Eq '^fs\.inotify\.max_user_watches=524288$' "$f" && \
+     grep -Eq '^fs\.inotify\.max_user_instances=1024$' "$f" && \
+     ! grep -Evq '^(#|[[:space:]]*$|fs\.inotify\.max_user_watches=524288|fs\.inotify\.max_user_instances=1024)$' "$f"; then
+    backup_file "$f"
+    sudo rm -f "$f"
+    info "Removed duplicate legacy inotify config: $f"
+  fi
+}
+
+has_amd_hardware(){
+  lscpu 2>/dev/null | grep -Eiq 'Vendor ID:[[:space:]]*AuthenticAMD' && return 0
+  lspci 2>/dev/null | grep -Eiq 'AMD|Advanced Micro Devices|ATI' && return 0
+  return 1
+}
+
+configure_dnf_automatic(){
+  install_if_missing dnf5-plugin-automatic
+
+  sudo mkdir -p /etc/dnf
+  backup_file /etc/dnf/automatic.conf
+
+  # Fedora 41+ / DNF5 uses dnf5-plugin-automatic and dnf5-automatic.timer.
+  # Write an explicit minimal config so we do not depend on whether the
+  # distribution template already exists on this machine.
+  sudo tee /etc/dnf/automatic.conf >/dev/null <<'DNF_AUTOMATIC_CONF'
+[commands]
+upgrade_type = security
+download_updates = yes
+apply_updates = yes
+reboot = never
+DNF_AUTOMATIC_CONF
+
+  if systemctl list-unit-files --type=timer --no-legend 2>/dev/null | awk '{print $1}' | grep -qx 'dnf5-automatic.timer'; then
+    sudo systemctl enable --now dnf5-automatic.timer || warn "Could not enable dnf5-automatic.timer."
+    info "dnf5-automatic security updates configured."
+  elif systemctl list-unit-files --type=timer --no-legend 2>/dev/null | awk '{print $1}' | grep -qx 'dnf-automatic.timer'; then
+    sudo systemctl enable --now dnf-automatic.timer || warn "Could not enable dnf-automatic.timer."
+    info "dnf-automatic security updates configured."
+  else
+    warn "No DNF automatic timer unit was found. Check with: systemctl list-unit-files '*automatic*'"
+  fi
+}
+
 # ----------------------------
 # PRE-FLIGHT
 # ----------------------------
 clear
-info "Fedora 44 KDE Plasma Interactive Workstation Setup"
+info "Fedora 44 KDE Plasma Interactive Workstation Setup v6"
 info "DNF command: $DNF_BIN"
 SCRIPT_LOG="${SCRIPT_LOG:-$HOME/fedora44-kde-setup-$(timestamp).log}"
 exec > >(tee -a "$SCRIPT_LOG") 2>&1
@@ -243,6 +385,8 @@ pause
 sudo -v
 while true; do sudo -v >/dev/null 2>&1; sleep 60; done & SUDO_PID=$!
 trap 'kill "$SUDO_PID" 2>/dev/null || true' EXIT
+
+check_rawhide_repos
 
 # ============================================================
 # BASIC SYSTEM
@@ -305,8 +449,10 @@ CORE_PACKAGES=(
 )
 
 
-SECURITY_PACKAGES=(dnf-automatic fail2ban rkhunter lynis)
-TWEAK_PACKAGES=(zram-generator-defaults power-profiles-daemon tuned)
+SECURITY_PACKAGES=(dnf5-plugin-automatic fail2ban rkhunter lynis)
+# Fedora 44 commonly uses tuned/tuned-ppd for power profiles. Do not install
+# power-profiles-daemon here because it conflicts with tuned-ppd.
+TWEAK_PACKAGES=(zram-generator-defaults tuned tuned-ppd)
 PRODUCTIVITY_APPS=(filezilla)
 DEV_PACKAGES=(
   gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config clang llvm lldb
@@ -320,7 +466,7 @@ VIRT_PACKAGES=(qemu-kvm libvirt virt-manager virt-install virt-viewer edk2-ovmf 
 
 if ask_user "Install CORE packages?"; then
   info "Refreshing repository metadata before core package installation..."
-  sudo "$DNF_BIN" makecache --refresh -y || warn "Metadata refresh failed; continuing with existing cache."
+  dnf_makecache --refresh || warn "Metadata refresh failed; continuing with existing cache."
   install_if_missing "${CORE_PACKAGES[@]}"
 fi
 ask_user "Install SECURITY packages?" && install_if_missing "${SECURITY_PACKAGES[@]}"
@@ -350,16 +496,8 @@ fi
 # ============================================================
 # AUTOMATIC UPDATES
 # ============================================================
-if ask_user "Configure dnf-automatic security updates?"; then
-  install_if_missing dnf-automatic
-  backup_file /etc/dnf/automatic.conf
-  sudo sed -i \
-    -e 's/^upgrade_type = .*/upgrade_type = security/' \
-    -e 's/^download_updates = .*/download_updates = yes/' \
-    -e 's/^apply_updates = .*/apply_updates = yes/' \
-    /etc/dnf/automatic.conf || true
-  sudo systemctl enable --now dnf-automatic.timer || warn "Could not enable dnf-automatic.timer."
-  info "dnf-automatic configuration attempted."
+if ask_user "Configure automatic security updates with DNF5?"; then
+  configure_dnf_automatic
 fi
 
 # ============================================================
@@ -387,6 +525,7 @@ fs.inotify.max_user_watches=524288
 fs.inotify.max_user_instances=1024
 INOTIFY
 
+  remove_legacy_duplicate_inotify_conf
   sudo sysctl --system
 
   # KDE equivalent of disabling GNOME Tracker: Baloo file indexer.
@@ -451,7 +590,11 @@ fi
 if findmnt -n -o FSTYPE / | grep -q '^btrfs$'; then
   if ask_user "Enable Snapper for Btrfs root?"; then
     install_if_missing snapper
-    sudo snapper -c root create-config / || true
+    if sudo snapper list-configs 2>/dev/null | awk '{print $1}' | grep -qx root; then
+      info "Snapper root config already exists."
+    else
+      sudo snapper -c root create-config / || warn "Snapper root config could not be created; it may already be covered."
+    fi
     sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer
   fi
 fi
@@ -489,12 +632,13 @@ fi
 
 # --- Tailscale ---
 if ask_user "Install Tailscale?"; then
-  if add_repo_from_url "https://pkgs.tailscale.com/stable/fedora/tailscale.repo"; then
-    sudo "$DNF_BIN" makecache -y || true
-    install_or_fail tailscale
+  ensure_tailscale_repo
+  dnf_makecache || warn "Tailscale metadata refresh failed; attempting install with existing metadata."
+  install_if_missing tailscale
+  if pkg_installed tailscale; then
     ask_user "Enable tailscaled service?" && sudo systemctl enable --now tailscaled
   else
-    warn "Tailscale repository setup failed; skipping Tailscale install."
+    warn "Tailscale was not installed. Check network access to pkgs.tailscale.com and DNF repo status."
   fi
 fi
 
@@ -522,7 +666,7 @@ repo_gpgcheck=1
 gpgkey=https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg
 VSCODIUM_REPO
 
-  sudo "$DNF_BIN" makecache -y || true
+  dnf_makecache || true
   install_if_missing code codium
 fi
 
@@ -536,7 +680,7 @@ enabled=1
 gpgcheck=1
 gpgkey=https://dl.google.com/linux/linux_signing_key.pub
 CHROME_REPO
-  sudo "$DNF_BIN" makecache -y || true
+  dnf_makecache || true
   install_if_missing google-chrome-stable
 fi
 
@@ -551,7 +695,7 @@ if ask_user "Install Docker Engine?"; then
     docker-engine-selinux docker-engine podman-docker
 
   if add_repo_from_url "https://download.docker.com/linux/fedora/docker-ce.repo"; then
-    sudo "$DNF_BIN" makecache -y || true
+    dnf_makecache || true
     if install_or_fail docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
       ask_user "Enable Docker service?" && sudo systemctl enable --now docker
 
@@ -793,9 +937,17 @@ BASH_DEFAULTS
   fi
 fi
 
-if ask_user "Enable common developer post-install setup (git-lfs, pipx path, direnv hook)?"; then
-  command -v git >/dev/null 2>&1 && git lfs install --skip-repo || true
+if ask_user "Install/configure common developer helpers (git-lfs, pipx path, direnv hook)?"; then
+  install_if_missing git git-lfs python3-pipx direnv
+
+  if command -v git >/dev/null 2>&1 && git lfs version >/dev/null 2>&1; then
+    git lfs install --skip-repo || true
+  else
+    warn "git-lfs is not available; skipping git lfs setup."
+  fi
+
   command -v pipx >/dev/null 2>&1 && python3 -m pipx ensurepath || true
+
   if command -v direnv >/dev/null 2>&1 && ! grep -q 'direnv hook bash' "$HOME/.bashrc" 2>/dev/null; then
     echo 'eval "$(direnv hook bash)"' >> "$HOME/.bashrc"
   fi
@@ -846,18 +998,26 @@ fi
 # ============================================================
 if ask_user "Install media codecs from Fedora/RPM Fusion?"; then
   ensure_rpmfusion
-  # ffmpeg may replace Fedora's ffmpeg-free; --allowerasing handles that normal case.
-  sudo "$DNF_BIN" install -y --allowerasing \
-    ffmpeg libavcodec-freeworld gstreamer1-plugins-bad-freeworld \
-    gstreamer1-plugins-ugly gstreamer1-plugin-openh264 mozilla-openh264 || \
-    warn "Some codec packages could not be installed. Check RPM Fusion availability for Fedora $(rpm -E %fedora)."
+  dnf_makecache || true
+
+  # Fedora may already ship ffmpeg-free. Prefer full ffmpeg when RPM Fusion
+  # provides it, but do not fail the script if Fedora/RPM Fusion has not yet
+  # published every freeworld package for this Fedora release.
+  sudo "$DNF_BIN" install -y --allowerasing --skip-unavailable ffmpeg || \
+    warn "Full ffmpeg could not be installed; keeping Fedora's available ffmpeg stack."
+
+  install_optional_packages \
+    libavcodec-freeworld gstreamer1-plugins-bad-freeworld \
+    gstreamer1-plugins-ugly gstreamer1-plugin-openh264 mozilla-openh264
 fi
 
 if ask_user "Install hardware video acceleration packages?"; then
   ensure_rpmfusion
-  install_if_missing \
+  dnf_makecache || true
+  install_optional_packages \
     libva-utils intel-media-driver libva-intel-driver \
-    mesa-va-drivers-freeworld mesa-vdpau-drivers-freeworld
+    mesa-va-drivers-freeworld mesa-vdpau-drivers-freeworld \
+    mesa-va-drivers mesa-vdpau-drivers libvdpau-va-gl
 fi
 
 # ============================================================
@@ -885,9 +1045,20 @@ if ask_user "Advanced: keep only 2 installed kernels?"; then
 fi
 
 if ask_user "Advanced: apply AMD-specific kernel args? Only use if you know you need them."; then
-  install_if_missing grubby
-  sudo grubby --update-kernel=ALL --args="amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856"
-  sudo grubby --info=DEFAULT | grep '^args=' || true
+  APPLY_AMD_ARGS=true
+  if ! has_amd_hardware; then
+    warn "No obvious AMD CPU/GPU was detected. These kernel args are usually inappropriate on Intel/NVIDIA-only systems."
+    if ! confirm_text "Type APPLY_AMD_ARGS to apply them anyway:" "APPLY_AMD_ARGS"; then
+      APPLY_AMD_ARGS=false
+      warn "AMD kernel args skipped."
+    fi
+  fi
+
+  if [[ "$APPLY_AMD_ARGS" == true ]]; then
+    install_if_missing grubby
+    sudo grubby --update-kernel=ALL --args="amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856"
+    sudo grubby --info=DEFAULT | grep '^args=' || true
+  fi
 fi
 
 if ask_user "Check firmware updates (fwupd)?"; then
