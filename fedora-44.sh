@@ -92,7 +92,7 @@ pkg_available(){
 }
 
 install_if_missing(){
-  local missing=() installable=() skipped=() p
+  local missing=() installable=() skipped=() failed=() p
 
   for p in "$@"; do
     pkg_installed "$p" || missing+=("$p")
@@ -112,7 +112,24 @@ install_if_missing(){
   (( ${#installable[@]} == 0 )) && return 0
 
   info "Installing: ${installable[*]}"
-  sudo "$DNF_BIN" install -y "${installable[@]}"
+  if sudo "$DNF_BIN" install -y "${installable[@]}"; then
+    return 0
+  fi
+
+  warn "Batch install failed. Retrying packages one by one so the script can continue and show the exact failing package."
+  for p in "${installable[@]}"; do
+    if pkg_installed "$p"; then
+      continue
+    fi
+    info "Installing single package: $p"
+    if ! sudo "$DNF_BIN" install -y "$p"; then
+      warn "Package failed and was skipped: $p"
+      failed+=("$p")
+    fi
+  done
+
+  (( ${#failed[@]} > 0 )) && warn "Some packages failed: ${failed[*]}"
+  return 0
 }
 
 install_or_fail(){
@@ -301,7 +318,11 @@ NETWORK_PACKAGES=(samba-client cifs-utils nfs-utils sshfs avahi nss-mdns)
 PRINT_SCAN_PACKAGES=(cups system-config-printer hplip sane-backends sane-airscan)
 VIRT_PACKAGES=(qemu-kvm libvirt virt-manager virt-install virt-viewer edk2-ovmf swtpm dnsmasq bridge-utils)
 
-ask_user "Install CORE packages?" && install_if_missing "${CORE_PACKAGES[@]}"
+if ask_user "Install CORE packages?"; then
+  info "Refreshing repository metadata before core package installation..."
+  sudo "$DNF_BIN" makecache --refresh -y || warn "Metadata refresh failed; continuing with existing cache."
+  install_if_missing "${CORE_PACKAGES[@]}"
+fi
 ask_user "Install SECURITY packages?" && install_if_missing "${SECURITY_PACKAGES[@]}"
 ask_user "Install TWEAK packages?" && install_if_missing "${TWEAK_PACKAGES[@]}"
 ask_user "Install PRODUCTIVITY apps?" && install_if_missing "${PRODUCTIVITY_APPS[@]}"
