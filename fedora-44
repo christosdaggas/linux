@@ -1,0 +1,1074 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+shopt -s extglob
+
+# Opinionated KDE defaults used only if you accept the appearance tweak prompt.
+# Override from the environment before running, for example:
+#   COLOR_SCHEME=BreezeLight ICON_THEME=breeze ./fedora44-kde-setup-minimal.sh
+COLOR_SCHEME="${COLOR_SCHEME:-BreezeDark}"
+ICON_THEME="${ICON_THEME:-breeze-dark}"
+UI_FONT="${UI_FONT:-Noto Sans,10,-1,5,50,0,0,0,0,0}"
+MONO_FONT="${MONO_FONT:-JetBrains Mono,10,-1,5,50,0,0,0,0,0}"
+
+# ============================================================
+# Fedora 44 KDE Plasma Interactive Workstation Setup
+# Minimal KDE-focused workstation bootstrap.
+# Target: Fedora Linux 44 KDE Plasma Desktop / Plasma 6.x
+# Run as a normal user. Review prompts carefully before accepting.
+# ============================================================
+
+# ----------------------------
+# UI / HELPERS
+# ----------------------------
+info(){ echo -e "\e[36m[INFO]\e[0m $*"; }
+warn(){ echo -e "\e[33m[WARN]\e[0m $*"; }
+error(){ echo -e "\e[31m[ERROR]\e[0m $*" >&2; }
+
+ask_user(){
+  local p="$1" r
+  while true; do
+    read -r -p "$(echo -e "\e[44m\e[1m$p [y/n]:\e[0m ")" r
+    case "$r" in
+      [Yy]) return 0 ;;
+      [Nn]) return 1 ;;
+      *) echo "y/n only" ;;
+    esac
+  done
+}
+
+pause(){ read -r -n1 -s -p "Press any key to continue..."; echo; }
+
+timestamp(){ date +%F_%H-%M-%S; }
+
+backup_file(){
+  local f="$1"
+  [[ -f "$f" ]] && sudo cp -a "$f" "$f.bak.$(timestamp)"
+}
+
+backup_dir(){
+  local d="$1"
+  [[ -d "$d" ]] && cp -a "$d" "$d.bak.$(timestamp)"
+}
+
+backup_user_file(){
+  local f="$1"
+  [[ -f "$f" ]] && cp -a "$f" "$f.bak.$(timestamp)"
+}
+
+confirm_text(){
+  local prompt="$1" expected="$2" answer
+  read -r -p "$prompt " answer
+  [[ "$answer" == "$expected" ]]
+}
+
+root_backing_disk(){
+  local dev pk type
+  dev="$(findmnt -n -o SOURCE / 2>/dev/null | sed 's/\[.*\]//')"
+  [[ "$dev" == /dev/* ]] || return 1
+
+  # Walk up the block-device tree until we reach a physical disk.
+  while true; do
+    type="$(lsblk -ndo TYPE "$dev" 2>/dev/null | head -n1 || true)"
+    [[ "$type" == "disk" ]] && { echo "$dev"; return 0; }
+    pk="$(lsblk -ndo PKNAME "$dev" 2>/dev/null | head -n1 || true)"
+    [[ -n "$pk" ]] || return 1
+    dev="/dev/$pk"
+  done
+}
+
+require_cmd(){
+  command -v "$1" >/dev/null 2>&1 || { error "Required command missing: $1"; return 1; }
+}
+
+DNF_BIN="$(command -v dnf5 || command -v dnf || true)"
+[[ -n "$DNF_BIN" ]] || { error "Neither dnf5 nor dnf was found."; exit 1; }
+
+pkg_installed(){ rpm -q --quiet "$1"; }
+
+pkg_available(){
+  local p="$1"
+  "$DNF_BIN" -q repoquery --available "$p" >/dev/null 2>&1 || \
+    "$DNF_BIN" -q list --available "$p" >/dev/null 2>&1
+}
+
+install_if_missing(){
+  local missing=() installable=() skipped=() p
+
+  for p in "$@"; do
+    pkg_installed "$p" || missing+=("$p")
+  done
+
+  (( ${#missing[@]} == 0 )) && return 0
+
+  for p in "${missing[@]}"; do
+    if pkg_available "$p"; then
+      installable+=("$p")
+    else
+      skipped+=("$p")
+    fi
+  done
+
+  (( ${#skipped[@]} > 0 )) && warn "Skipping unavailable packages: ${skipped[*]}"
+  (( ${#installable[@]} == 0 )) && return 0
+
+  info "Installing: ${installable[*]}"
+  sudo "$DNF_BIN" install -y "${installable[@]}"
+}
+
+install_or_fail(){
+  info "Installing: $*"
+  sudo "$DNF_BIN" install -y "$@"
+}
+
+
+remove_if_installed(){
+  local installed=() p
+  for p in "$@"; do
+    pkg_installed "$p" && installed+=("$p")
+  done
+  (( ${#installed[@]} == 0 )) && { info "None of these packages are installed: $*"; return 0; }
+  info "Removing: ${installed[*]}"
+  sudo "$DNF_BIN" remove -y "${installed[@]}"
+}
+
+add_repo_from_url(){
+  local url="$1"
+  install_if_missing dnf5-plugins dnf-plugins-core
+
+  if sudo "$DNF_BIN" config-manager addrepo --from-repofile "$url" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if sudo "$DNF_BIN" config-manager --add-repo "$url" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  error "Could not add repository from: $url"
+  return 1
+}
+
+ensure_line_after_main(){
+  local file="$1" key="$2" value="$3"
+  sudo touch "$file"
+  if sudo grep -qE "^${key}=" "$file"; then
+    sudo sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+  elif sudo grep -q '^\[main\]' "$file"; then
+    sudo awk -v k="$key" -v v="$value" '
+      BEGIN{done=0}
+      /^\[main\]/{print; print k"="v; done=1; next}
+      {print}
+      END{if(!done){print "[main]"; print k"="v}}
+    ' "$file" | sudo tee "$file.tmp" >/dev/null
+    sudo mv "$file.tmp" "$file"
+  else
+    printf '\n[main]\n%s=%s\n' "$key" "$value" | sudo tee -a "$file" >/dev/null
+  fi
+}
+
+kwrite(){
+  local writer
+  writer="$(command -v kwriteconfig6 || command -v kwriteconfig5 || true)"
+  [[ -n "$writer" ]] || { warn "kwriteconfig6/5 not found; skipping KDE config write: $*"; return 0; }
+  "$writer" "$@" || warn "KDE config write failed: $*"
+}
+
+qdbus_call(){
+  local qdbus
+  qdbus="$(command -v qdbus6 || command -v qdbus-qt6 || command -v qdbus || true)"
+  [[ -n "$qdbus" ]] || return 0
+  "$qdbus" "$@" >/dev/null 2>&1 || true
+}
+
+current_user(){
+  local u="${SUDO_USER:-}"
+  [[ -n "$u" && "$u" != "root" ]] || u="$(logname 2>/dev/null || true)"
+  [[ -n "$u" ]] || u="$USER"
+  echo "$u"
+}
+
+# ----------------------------
+# PRE-FLIGHT
+# ----------------------------
+clear
+info "Fedora 44 KDE Plasma Interactive Workstation Setup"
+info "DNF command: $DNF_BIN"
+SCRIPT_LOG="${SCRIPT_LOG:-$HOME/fedora44-kde-setup-$(timestamp).log}"
+exec > >(tee -a "$SCRIPT_LOG") 2>&1
+info "Logging to: $SCRIPT_LOG"
+
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+  error "Run this as your normal user, not as root. The script will use sudo when needed."
+  exit 1
+fi
+
+if [[ -r /etc/fedora-release ]]; then
+  FEDORA_RELEASE="$(cat /etc/fedora-release)"
+  info "$FEDORA_RELEASE"
+  if ! grep -qE 'Fedora .* 44|Fedora Linux 44' /etc/fedora-release; then
+    warn "This script targets Fedora 44. Your release appears to be: $FEDORA_RELEASE"
+    ask_user "Continue anyway?" || exit 1
+  fi
+else
+  warn "/etc/fedora-release not found; this does not look like Fedora."
+  ask_user "Continue anyway?" || exit 1
+fi
+
+if [[ "${XDG_CURRENT_DESKTOP:-}" != *KDE* && "${DESKTOP_SESSION:-}" != *plasma* ]]; then
+  warn "The current session does not look like KDE Plasma. KDE tweaks will still be best-effort."
+fi
+
+ROOT_FREE_KIB="$(df --output=avail / | tail -n1 | tr -d ' ')"
+if [[ "$ROOT_FREE_KIB" =~ ^[0-9]+$ ]] && (( ROOT_FREE_KIB < 10485760 )); then
+  warn "Less than 10 GiB free on /. Package installs and updates may fail."
+fi
+
+pause
+sudo -v
+while true; do sudo -v >/dev/null 2>&1; sleep 60; done & SUDO_PID=$!
+trap 'kill "$SUDO_PID" 2>/dev/null || true' EXIT
+
+# ============================================================
+# BASIC SYSTEM
+# ============================================================
+if ask_user "Optimize DNF configuration?"; then
+  backup_file /etc/dnf/dnf.conf
+  # Conservative DNF options for Fedora 44. DNF5 uses /etc/dnf/dnf.conf as its main config.
+  ensure_line_after_main /etc/dnf/dnf.conf max_parallel_downloads 10
+  ensure_line_after_main /etc/dnf/dnf.conf keepcache True
+  ensure_line_after_main /etc/dnf/dnf.conf installonly_limit 2
+  info "DNF configuration updated."
+fi
+
+if ask_user "Enable periodic SSD TRIM (fstrim.timer)?"; then
+  sudo systemctl enable --now fstrim.timer
+fi
+
+if ask_user "Change hostname?"; then
+  read -r -p "New hostname: " H
+  if [[ "$H" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$ ]]; then
+    sudo hostnamectl set-hostname "$H"
+  else
+    warn "Invalid hostname skipped."
+  fi
+fi
+
+if ask_user "Add Greek keyboard layout for KDE Plasma?"; then
+  kwrite --file kxkbrc --group Layout --key Use true
+  kwrite --file kxkbrc --group Layout --key LayoutList "us,gr"
+  kwrite --file kxkbrc --group Layout --key VariantList ","
+  kwrite --file kxkbrc --group Layout --key Options "grp:alt_shift_toggle"
+  kwrite --file kxkbrc --group Layout --key SwitchMode "Global"
+  qdbus_call org.kde.KWin /KWin reconfigure
+  warn "Keyboard layout changes may require logout/login to appear in Plasma settings."
+fi
+
+# ============================================================
+# REMOVE DEFAULT / UNWANTED APPS
+# ============================================================
+# KDE-safe: remove only if installed. This avoids touching KDE defaults.
+UNWANTED=(evince rhythmbox gnome-tour mediawriter abrt)
+if ask_user "Remove unwanted/preinstalled apps if present (${UNWANTED[*]})?"; then
+  remove_if_installed "${UNWANTED[@]}"
+fi
+
+# ============================================================
+# SYSTEM UPDATE
+# ============================================================
+if ask_user "Run full system upgrade (dnf upgrade --refresh)?"; then
+  sudo "$DNF_BIN" upgrade --refresh -y
+fi
+
+# ============================================================
+# PACKAGE GROUPS
+# ============================================================
+CORE_PACKAGES=(
+  ca-certificates curl wget openssl gnupg2 fontconfig xorg-x11-font-utils
+  dnf5 dnf5-plugins dnf-plugins-core glib2 fuse fuse-libs fuse3 fuse3-libs
+  fwupd pciutils usbutils lsof rsync unzip jq tar xz bzip2 xdg-user-dirs
+)
+
+
+SECURITY_PACKAGES=(dnf-automatic fail2ban rkhunter lynis)
+TWEAK_PACKAGES=(zram-generator-defaults power-profiles-daemon tuned)
+PRODUCTIVITY_APPS=(filezilla)
+DEV_PACKAGES=(
+  gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config clang llvm lldb
+  git-lfs gh ShellCheck shfmt nodejs npm python3-devel python3-pip python3-pipx
+  sqlite sqlitebrowser httpie direnv just
+)
+CONTAINER_PACKAGES=(podman podman-compose buildah skopeo toolbox distrobox)
+NETWORK_PACKAGES=(samba-client cifs-utils nfs-utils sshfs avahi nss-mdns)
+PRINT_SCAN_PACKAGES=(cups system-config-printer hplip sane-backends sane-airscan)
+VIRT_PACKAGES=(qemu-kvm libvirt virt-manager virt-install virt-viewer edk2-ovmf swtpm dnsmasq bridge-utils)
+
+ask_user "Install CORE packages?" && install_if_missing "${CORE_PACKAGES[@]}"
+ask_user "Install SECURITY packages?" && install_if_missing "${SECURITY_PACKAGES[@]}"
+ask_user "Install TWEAK packages?" && install_if_missing "${TWEAK_PACKAGES[@]}"
+ask_user "Install PRODUCTIVITY apps?" && install_if_missing "${PRODUCTIVITY_APPS[@]}"
+ask_user "Install web/developer toolchain packages?" && install_if_missing "${DEV_PACKAGES[@]}"
+ask_user "Install Podman/container utility packages?" && install_if_missing "${CONTAINER_PACKAGES[@]}"
+
+if ask_user "Install virtualization stack (KVM/libvirt/virt-manager)?"; then
+  install_if_missing "${VIRT_PACKAGES[@]}"
+  sudo systemctl enable --now libvirtd || warn "Could not enable libvirtd."
+  sudo getent group libvirt >/dev/null || sudo groupadd libvirt
+  sudo usermod -aG libvirt "$(current_user)"
+  warn "libvirt group membership requires logout/login before it fully applies."
+fi
+
+if ask_user "Install network filesystem / sharing tools (SMB, NFS, SSHFS)?"; then
+  install_if_missing "${NETWORK_PACKAGES[@]}"
+  sudo systemctl enable --now avahi-daemon 2>/dev/null || true
+fi
+
+if ask_user "Install printer/scanner support?"; then
+  install_if_missing "${PRINT_SCAN_PACKAGES[@]}"
+  sudo systemctl enable --now cups.service 2>/dev/null || true
+fi
+
+# ============================================================
+# AUTOMATIC UPDATES
+# ============================================================
+if ask_user "Configure dnf-automatic security updates?"; then
+  install_if_missing dnf-automatic
+  backup_file /etc/dnf/automatic.conf
+  sudo sed -i \
+    -e 's/^upgrade_type = .*/upgrade_type = security/' \
+    -e 's/^download_updates = .*/download_updates = yes/' \
+    -e 's/^apply_updates = .*/apply_updates = yes/' \
+    /etc/dnf/automatic.conf || true
+  sudo systemctl enable --now dnf-automatic.timer || warn "Could not enable dnf-automatic.timer."
+  info "dnf-automatic configuration attempted."
+fi
+
+# ============================================================
+# SPEED & PERFORMANCE OPTIMIZATIONS
+# ============================================================
+if ask_user "Apply system-wide speed & performance optimizations?"; then
+  info "Applying speed and performance optimizations..."
+
+  # Faster shutdown without being as aggressive as 10s on laptops/external disks.
+  sudo mkdir -p /etc/systemd/system.conf.d
+  sudo tee /etc/systemd/system.conf.d/timeout.conf >/dev/null <<'SYSTEMD_TIMEOUT'
+[Manager]
+DefaultTimeoutStartSec=15s
+DefaultTimeoutStopSec=15s
+SYSTEMD_TIMEOUT
+
+  # Reduce swap aggressiveness. Fedora zram remains useful; this only biases away from swap.
+  sudo tee /etc/sysctl.d/99-swappiness.conf >/dev/null <<'SWAPPINESS'
+vm.swappiness=10
+SWAPPINESS
+
+  # Developer-friendly file watcher limits.
+  sudo tee /etc/sysctl.d/99-inotify.conf >/dev/null <<'INOTIFY'
+fs.inotify.max_user_watches=524288
+fs.inotify.max_user_instances=1024
+INOTIFY
+
+  sudo sysctl --system
+
+  # KDE equivalent of disabling GNOME Tracker: Baloo file indexer.
+  if ask_user "Disable KDE Baloo file indexing?"; then
+    if command -v balooctl6 >/dev/null 2>&1; then
+      balooctl6 suspend || true
+      balooctl6 disable || true
+    elif command -v balooctl >/dev/null 2>&1; then
+      balooctl suspend || true
+      balooctl disable || true
+    else
+      warn "balooctl not found; writing Baloo config only."
+    fi
+    kwrite --file baloofilerc --group "Basic Settings" --key "Indexing-Enabled" false
+  fi
+
+  # Keep Discover usable; only disable the notifier if requested.
+  if ask_user "Disable KDE Discover update notifier autostart?"; then
+    mkdir -p "$HOME/.config/autostart"
+    if [[ -f /etc/xdg/autostart/org.kde.discover.notifier.desktop ]]; then
+      cp /etc/xdg/autostart/org.kde.discover.notifier.desktop "$HOME/.config/autostart/"
+      echo "Hidden=true" >> "$HOME/.config/autostart/org.kde.discover.notifier.desktop"
+    else
+      warn "Discover notifier autostart file not found."
+    fi
+  fi
+
+  # Optional: PackageKit is used by KDE Discover for RPM updates. Do not disable silently.
+  if ask_user "Disable PackageKit service/socket? This can break KDE Discover RPM updates."; then
+    sudo systemctl disable --now packagekit.service packagekit.socket 2>/dev/null || true
+  fi
+
+  # Plasma UI responsiveness: best-effort, safe config writes.
+  kwrite --file kdeglobals --group KDE --key AnimationDurationFactor 0
+  kwrite --file kwinrc --group Compositing --key AnimationSpeed 0
+  qdbus_call org.kde.KWin /KWin reconfigure
+
+  # Ensure zram package/service defaults are present where Fedora provides them.
+  install_if_missing zram-generator-defaults
+  sudo systemctl daemon-reload
+
+  # Persistent logs are useful for debugging slow boots and KDE session issues.
+  sudo mkdir -p /var/log/journal
+  sudo systemctl restart systemd-journald
+
+  info "Speed & performance optimizations applied."
+fi
+
+# ============================================================
+# FIREWALL
+# ============================================================
+if ask_user "Set firewall default zone to home?"; then
+  install_if_missing firewalld
+  sudo systemctl enable --now firewalld
+  sudo firewall-cmd --set-default-zone=home || true
+fi
+
+
+# ============================================================
+# BTRFS / SNAPPER
+# ============================================================
+if findmnt -n -o FSTYPE / | grep -q '^btrfs$'; then
+  if ask_user "Enable Snapper for Btrfs root?"; then
+    install_if_missing snapper
+    sudo snapper -c root create-config / || true
+    sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer
+  fi
+fi
+
+# ============================================================
+# SELINUX INFO
+# ============================================================
+if command -v getenforce >/dev/null 2>&1; then
+  getenforce | grep -q Enforcing || warn "SELinux is not enforcing."
+fi
+
+# ============================================================
+# REPOS: RPM FUSION
+# ============================================================
+ensure_rpmfusion(){
+  if rpm -q rpmfusion-free-release rpmfusion-nonfree-release >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local fedora_version
+  fedora_version="$(rpm -E %fedora)"
+  info "Enabling RPM Fusion free + nonfree for Fedora $fedora_version"
+  sudo "$DNF_BIN" install -y \
+    "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${fedora_version}.noarch.rpm" \
+    "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${fedora_version}.noarch.rpm"
+}
+
+if ask_user "Enable RPM Fusion (free + nonfree)?"; then
+  ensure_rpmfusion
+fi
+
+# ============================================================
+# SOFTWARE BLOCKS
+# ============================================================
+
+# --- Tailscale ---
+if ask_user "Install Tailscale?"; then
+  if add_repo_from_url "https://pkgs.tailscale.com/stable/fedora/tailscale.repo"; then
+    sudo "$DNF_BIN" makecache -y || true
+    install_or_fail tailscale
+    ask_user "Enable tailscaled service?" && sudo systemctl enable --now tailscaled
+  else
+    warn "Tailscale repository setup failed; skipping Tailscale install."
+  fi
+fi
+
+# --- VS Code / VSCodium ---
+if ask_user "Install VS Code + VSCodium?"; then
+  sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc || true
+  sudo tee /etc/yum.repos.d/vscode.repo >/dev/null <<'VSCODE_REPO'
+[code]
+name=Visual Studio Code
+baseurl=https://packages.microsoft.com/yumrepos/vscode
+enabled=1
+autorefresh=1
+type=rpm-md
+gpgcheck=1
+gpgkey=https://packages.microsoft.com/keys/microsoft.asc
+VSCODE_REPO
+
+  sudo tee /etc/yum.repos.d/vscodium.repo >/dev/null <<'VSCODIUM_REPO'
+[vscodium]
+name=VSCodium
+baseurl=https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/rpms/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg
+VSCODIUM_REPO
+
+  sudo "$DNF_BIN" makecache -y || true
+  install_if_missing code codium
+fi
+
+# --- Chrome ---
+if ask_user "Install Google Chrome?"; then
+  sudo tee /etc/yum.repos.d/google-chrome.repo >/dev/null <<'CHROME_REPO'
+[google-chrome]
+name=google-chrome
+baseurl=https://dl.google.com/linux/chrome/rpm/stable/x86_64
+enabled=1
+gpgcheck=1
+gpgkey=https://dl.google.com/linux/linux_signing_key.pub
+CHROME_REPO
+  sudo "$DNF_BIN" makecache -y || true
+  install_if_missing google-chrome-stable
+fi
+
+# --- Git ---
+ask_user "Install Git?" && install_if_missing git
+
+# --- Docker Engine ---
+if ask_user "Install Docker Engine?"; then
+  remove_if_installed \
+    docker docker-client docker-client-latest docker-common docker-latest \
+    docker-latest-logrotate docker-logrotate docker-selinux \
+    docker-engine-selinux docker-engine podman-docker
+
+  if add_repo_from_url "https://download.docker.com/linux/fedora/docker-ce.repo"; then
+    sudo "$DNF_BIN" makecache -y || true
+    if install_or_fail docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+      ask_user "Enable Docker service?" && sudo systemctl enable --now docker
+
+      sudo getent group docker >/dev/null || sudo groupadd docker
+      sudo usermod -aG docker "$(current_user)"
+      warn "Docker group membership requires logout/login before non-sudo docker works."
+    else
+      error "Docker package installation failed. Check network/repository availability and try again."
+    fi
+  else
+    error "Docker repository setup failed. Docker was not installed."
+  fi
+fi
+
+# --- Microsoft Fonts ---
+if ask_user "Install Microsoft Core Fonts via legacy RPM?"; then
+  install_if_missing curl cabextract fontconfig xorg-x11-font-utils
+  TMPDIR_FONTS="$(mktemp -d)"
+  MSFONTS_RPM="$TMPDIR_FONTS/msttcore-fonts-installer.rpm"
+
+  if curl -fL --retry 3 --connect-timeout 20 -o "$MSFONTS_RPM" \
+    https://downloads.sourceforge.net/project/mscorefonts2/rpms/msttcore-fonts-installer-2.6-1.noarch.rpm; then
+    if sudo rpm -Uvh --replacepkgs --nodigest --nofiledigest "$MSFONTS_RPM"; then
+      sudo fc-cache -fsv
+      if fc-match Arial | grep -qiE 'arial|msttcore'; then
+        info "Microsoft Core Fonts appear to be installed correctly: $(fc-match Arial)"
+      else
+        warn "Microsoft fonts installer ran, but Arial was not detected by fc-match. Check KDE System Settings > Text & Fonts > Font Management."
+      fi
+    else
+      error "Microsoft Core Fonts RPM installation failed."
+    fi
+  else
+    error "Could not download Microsoft Core Fonts installer RPM."
+  fi
+
+  rm -rf "$TMPDIR_FONTS"
+fi
+
+# --- LibreOffice ---
+ask_user "Install LibreOffice (EN + EL)?" && \
+  install_if_missing libreoffice libreoffice-langpack-en libreoffice-langpack-el
+
+# --- Design Apps ---
+ask_user "Install GIMP & Inkscape?" && install_if_missing gimp inkscape
+
+# --- Cockpit ---
+if ask_user "Install Cockpit?"; then
+  install_if_missing cockpit
+  ask_user "Enable Cockpit socket?" && sudo systemctl enable --now cockpit.socket
+  if systemctl is-active --quiet firewalld; then
+    ask_user "Open Cockpit service in the already-running firewalld?" && \
+      sudo firewall-cmd --add-service=cockpit --permanent && sudo firewall-cmd --reload || true
+  else
+    warn "firewalld is not running. Cockpit was installed separately; use the firewall option if you want firewalld."
+  fi
+fi
+
+# ============================================================
+# KDE PLASMA TWEAKS / UI
+# ============================================================
+if ask_user "Apply KDE Plasma UI tweaks?"; then
+  # General Plasma responsiveness.
+  kwrite --file kdeglobals --group KDE --key AnimationDurationFactor 0
+  kwrite --file kdeglobals --group KDE --key GraphicEffectsLevel 0
+
+  # Safe general Plasma defaults.
+  kwrite --file kdeglobals --group Locale --key TimeFormat "%H:%M:%S"
+  kwrite --file kdeglobals --group KDE --key ShowMenuBar true
+  kwrite --file ksmserverrc --group General --key loginMode emptySession
+  kwrite --file kcminputrc --group Keyboard --key NumLock 0
+
+  # Optional appearance defaults from COLOR_SCHEME, ICON_THEME, UI_FONT and MONO_FONT.
+  if ask_user "Apply opinionated KDE appearance defaults: $COLOR_SCHEME, $ICON_THEME, Noto Sans/JetBrains Mono?"; then
+    kwrite --file kdeglobals --group General --key ColorScheme "$COLOR_SCHEME"
+    kwrite --file kdeglobals --group Icons --key Theme "$ICON_THEME"
+    kwrite --file kdeglobals --group General --key font "$UI_FONT"
+    kwrite --file kdeglobals --group General --key fixed "$MONO_FONT"
+  fi
+
+  if ask_user "Use single-click to open files/folders in KDE?"; then
+    kwrite --file kdeglobals --group KDE --key SingleClick true
+  fi
+
+  # Dolphin and KDE file dialog quality-of-life settings.
+  kwrite --file dolphinrc --group General --key ShowFullPath true
+  kwrite --file dolphinrc --group General --key ShowFullPathInTitlebar true
+  kwrite --file dolphinrc --group General --key ShowHiddenFiles true
+  kwrite --file dolphinrc --group General --key RememberOpenedTabs false
+  kwrite --file dolphinrc --group General --key ConfirmClosingMultipleTabs false
+  kwrite --file kdeglobals --group KDE --key ShowDeleteCommand true
+  kwrite --file kdeglobals --group "KFileDialog Settings" --key "Show Hidden Files" true
+
+  if ask_user "Disable Dolphin file previews for snappier folders?"; then
+    kwrite --file dolphinrc --group General --key PreviewsShown false
+  fi
+
+  # KWin, compositor, Night Light and KRunner settings.
+  kwrite --file kwinrc --group Compositing --key AnimationSpeed 0
+  kwrite --file kwinrc --group Compositing --key AnimationsEnabled false
+  kwrite --file kwinrc --group Compositing --key Enabled true
+  kwrite --file kwinrc --group Plugins --key blurEnabled true
+  kwrite --file kwinrc --group NightColor --key Active true
+  kwrite --file kwinrc --group NightColor --key Mode Automatic
+  kwrite --file kwinrc --group NightColor --key NightTemperature 4000
+  kwrite --file kwinrc --group TabBox --key LayoutName thumbnail_grid
+  kwrite --file krunnerrc --group General --key FreeFloating true
+
+  # Lock screen defaults. Keep enabled by default; disabling it is a separate security-sensitive choice.
+  kwrite --file kscreenlockerrc --group Daemon --key Autolock true
+  kwrite --file kscreenlockerrc --group Daemon --key Timeout 10
+  if ask_user "Disable KDE automatic screen locking? Not recommended on laptops/shared spaces."; then
+    kwrite --file kscreenlockerrc --group Daemon --key Autolock false
+  fi
+
+  # KWallet can store Wi-Fi/browser/app secrets. Disabling it is intentionally optional.
+  if ask_user "Disable KDE Wallet? This may affect Wi-Fi, browsers, and saved app credentials."; then
+    kwrite --file kwalletrc --group Wallet --key Enabled false
+  fi
+
+  # Touchpad best-effort settings. Plasma stores many device-specific libinput keys;
+  # these generic keys are harmless if Plasma ignores them.
+  kwrite --file kcminputrc --group Libinput --key TapToClick true
+  kwrite --file kcminputrc --group Libinput --key NaturalScroll true
+
+  # Spectacle screenshot defaults.
+  mkdir -p "$HOME/Pictures/Screenshots"
+  kwrite --file spectaclerc --group General --key defaultSaveLocation "$HOME/Pictures/Screenshots"
+  kwrite --file spectaclerc --group General --key autoSaveImage true
+  kwrite --file spectaclerc --group General --key copyImageToClipboard true
+
+  # Better defaults for file pickers and recent documents.
+  kwrite --file kdeglobals --group General --key BrowserApplication firefox
+  kwrite --file kdeglobals --group RecentDocuments --key UseRecent true
+
+  if ask_user "Disable KDE Baloo file indexing?"; then
+    if command -v balooctl6 >/dev/null 2>&1; then
+      balooctl6 suspend || true
+      balooctl6 disable || true
+    elif command -v balooctl >/dev/null 2>&1; then
+      balooctl suspend || true
+      balooctl disable || true
+    else
+      warn "balooctl not found; writing Baloo config only."
+    fi
+    kwrite --file baloofilerc --group "Basic Settings" --key "Indexing-Enabled" false
+  fi
+
+  if ask_user "Create Home and /usr desktop shortcuts?"; then
+    DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
+    [[ -n "$DESKTOP_DIR" ]] || DESKTOP_DIR="$HOME/Desktop"
+    mkdir -p "$DESKTOP_DIR"
+
+    cat > "$DESKTOP_DIR/Home.desktop" <<DESKTOP_HOME
+[Desktop Entry]
+Name=Home
+Type=Link
+URL=file://$HOME
+Icon=user-home
+DESKTOP_HOME
+
+    cat > "$DESKTOP_DIR/usr.desktop" <<'DESKTOP_USR'
+[Desktop Entry]
+Name=/usr
+Type=Link
+URL=file:///usr
+Icon=folder
+DESKTOP_USR
+
+    chmod +x "$DESKTOP_DIR/Home.desktop" "$DESKTOP_DIR/usr.desktop"
+  fi
+
+  qdbus_call org.kde.KWin /KWin reconfigure
+  qdbus_call org.kde.KGlobalSettings /KGlobalSettings notifyChange 0 0
+  warn "Some Plasma settings may require logout/login to fully apply."
+fi
+
+# ============================================================
+# KDE / DOLPHIN TEMPLATES
+# ============================================================
+if ask_user "Add KDE/Dolphin Templates (Text, Markdown, HTML)?"; then
+  TEMPLATES_DIR="$(xdg-user-dir TEMPLATES 2>/dev/null || echo "$HOME/Templates")"
+  [[ -n "$TEMPLATES_DIR" ]] || TEMPLATES_DIR="$HOME/Templates"
+
+  info "Creating templates in $TEMPLATES_DIR"
+  mkdir -p "$TEMPLATES_DIR"
+
+  touch "$TEMPLATES_DIR/Text Document.txt"
+
+  cat > "$TEMPLATES_DIR/Markdown.md" <<'MARKDOWN_TEMPLATE'
+# Title
+
+Write here...
+MARKDOWN_TEMPLATE
+
+  cat > "$TEMPLATES_DIR/HTML Document.html" <<'HTML_TEMPLATE'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document</title>
+</head>
+<body>
+
+</body>
+</html>
+HTML_TEMPLATE
+
+  info "Dolphin templates added."
+fi
+
+
+# ============================================================
+# CLI / SECURITY
+# ============================================================
+ask_user "Install CLI tools (fzf, bat, ripgrep, fd-find, eza)?" && \
+  install_if_missing fzf bat ripgrep fd-find eza
+
+if ask_user "Install USBGuard? Be careful: it can block newly connected USB devices."; then
+  install_if_missing usbguard
+  sudo systemctl enable --now usbguard
+fi
+
+# ============================================================
+# DEV OPTIONS
+# ============================================================
+if ask_user "Improve Bash defaults (history, colors, completion)?"; then
+  if ! grep -q "# Fedora KDE setup bash defaults" "$HOME/.bashrc" 2>/dev/null; then
+    cat >> "$HOME/.bashrc" <<'BASH_DEFAULTS'
+
+# Fedora KDE setup bash defaults
+HISTSIZE=10000
+HISTFILESIZE=20000
+shopt -s histappend
+bind '"\e[A": history-search-backward'
+bind '"\e[B": history-search-forward'
+BASH_DEFAULTS
+  fi
+fi
+
+if ask_user "Enable common developer post-install setup (git-lfs, pipx path, direnv hook)?"; then
+  command -v git >/dev/null 2>&1 && git lfs install --skip-repo || true
+  command -v pipx >/dev/null 2>&1 && python3 -m pipx ensurepath || true
+  if command -v direnv >/dev/null 2>&1 && ! grep -q 'direnv hook bash' "$HOME/.bashrc" 2>/dev/null; then
+    echo 'eval "$(direnv hook bash)"' >> "$HOME/.bashrc"
+  fi
+fi
+
+# ============================================================
+# FONTS
+# ============================================================
+if ask_user "Install extra fonts (Noto, Roboto, JetBrains Mono, Inter, etc.)?"; then
+  install_if_missing \
+    fira-code-fonts jetbrains-mono-fonts google-roboto-fonts \
+    google-noto-sans-fonts google-noto-serif-fonts google-noto-mono-fonts \
+    google-noto-emoji-color-fonts liberation-sans-fonts liberation-serif-fonts \
+    liberation-mono-fonts rsms-inter-fonts
+fi
+
+if ask_user "Install MesloLGS Nerd Fonts (Powerlevel10k)?"; then
+  install_if_missing wget fontconfig
+  sudo mkdir -p /usr/share/fonts/meslo-lgs-nf
+  sudo wget -q -P /usr/share/fonts/meslo-lgs-nf/ \
+    https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Regular.ttf \
+    https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold.ttf \
+    https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Italic.ttf \
+    https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf || true
+  sudo fc-cache -fv
+fi
+
+if ask_user "Apply user font rendering tweaks (fontconfig)?"; then
+  mkdir -p "$HOME/.config/fontconfig"
+  backup_user_file "$HOME/.config/fontconfig/fonts.conf" || true
+  cat > "$HOME/.config/fontconfig/fonts.conf" <<'FONTCONFIG'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <match target="font">
+    <edit name="hinting" mode="assign"><bool>true</bool></edit>
+    <edit name="hintstyle" mode="assign"><const>hintslight</const></edit>
+    <edit name="antialias" mode="assign"><bool>true</bool></edit>
+    <edit name="rgba" mode="assign"><const>rgb</const></edit>
+  </match>
+</fontconfig>
+FONTCONFIG
+  fc-cache -fv
+fi
+
+# ============================================================
+# MEDIA CODECS
+# ============================================================
+if ask_user "Install media codecs from Fedora/RPM Fusion?"; then
+  ensure_rpmfusion
+  # ffmpeg may replace Fedora's ffmpeg-free; --allowerasing handles that normal case.
+  sudo "$DNF_BIN" install -y --allowerasing \
+    ffmpeg libavcodec-freeworld gstreamer1-plugins-bad-freeworld \
+    gstreamer1-plugins-ugly gstreamer1-plugin-openh264 mozilla-openh264 || \
+    warn "Some codec packages could not be installed. Check RPM Fusion availability for Fedora $(rpm -E %fedora)."
+fi
+
+if ask_user "Install hardware video acceleration packages?"; then
+  ensure_rpmfusion
+  install_if_missing \
+    libva-utils intel-media-driver libva-intel-driver \
+    mesa-va-drivers-freeworld mesa-vdpau-drivers-freeworld
+fi
+
+# ============================================================
+# ADVANCED: GRUB / KERNEL / FIRMWARE
+# ============================================================
+if ask_user "Advanced: GRUB remember last selected entry?"; then
+  install_if_missing grubby grub2-tools
+  backup_file /etc/default/grub
+  sudo sed -i \
+    -e 's/^#\?GRUB_DEFAULT=.*/GRUB_DEFAULT=saved/' \
+    -e 's/^#\?GRUB_SAVEDEFAULT=.*/GRUB_SAVEDEFAULT=true/' \
+    -e 's/^#\?GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=menu/' \
+    -e 's/^#\?GRUB_TIMEOUT=.*/GRUB_TIMEOUT=5/' /etc/default/grub
+  sudo grub2-editenv /boot/grub2/grubenv create || true
+  sudo grub2-mkconfig -o /boot/grub2/grub.cfg
+fi
+
+if ask_user "Advanced: keep only 2 installed kernels?"; then
+  backup_file /etc/dnf/dnf.conf
+  ensure_line_after_main /etc/dnf/dnf.conf installonly_limit 2
+  sudo "$DNF_BIN" repoquery --installonly --latest-limit=-2 || true
+  if ask_user "Remove older kernels now?"; then
+    sudo "$DNF_BIN" repoquery --installonly --latest-limit=-2 -q | sudo xargs -r "$DNF_BIN" remove -y
+  fi
+fi
+
+if ask_user "Advanced: apply AMD-specific kernel args? Only use if you know you need them."; then
+  install_if_missing grubby
+  sudo grubby --update-kernel=ALL --args="amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856"
+  sudo grubby --info=DEFAULT | grep '^args=' || true
+fi
+
+if ask_user "Check firmware updates (fwupd)?"; then
+  install_if_missing fwupd
+  sudo fwupdmgr refresh --force
+  sudo fwupdmgr get-updates
+  ask_user "Apply firmware updates?" && sudo fwupdmgr update
+fi
+
+# ============================================================
+# SETUP EXTRA DISKS (BITLOCKER & NVMe-SAFE PARTITION HANDLING)
+# ============================================================
+setup_secondary_disk(){
+  info "Starting disk setup..."
+  install_if_missing util-linux parted ntfs-3g ntfsprogs exfatprogs btrfs-progs xfsprogs
+
+  local USERNAME USERID GROUPID
+  USERNAME="$(current_user)"
+  USERID="$(id -u "$USERNAME")"
+  GROUPID="$(id -g "$USERNAME")"
+
+  local ROOT_DISK
+  ROOT_DISK="$(root_backing_disk 2>/dev/null || true)"
+
+  echo "=== Available Disks ==="
+  mapfile -t DISKS < <(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}')
+  if (( ${#DISKS[@]} == 0 )); then
+    error "No disks found."
+    return 1
+  fi
+
+  local i=1 DISK SIZE MARKER
+  for DISK in "${DISKS[@]}"; do
+    SIZE="$(lsblk -dnbo SIZE "$DISK" | numfmt --to=iec-i --suffix=B)"
+    MARKER=""
+    [[ -n "$ROOT_DISK" && "$DISK" == "$ROOT_DISK" ]] && MARKER=" [ROOT/SYSTEM DISK]"
+    echo "[$i] $DISK ($SIZE)$MARKER"
+    i=$((i+1))
+  done
+
+  local DISK_NUMBER SELECTED_DISK
+  while true; do
+    read -r -p "Select disk number: " DISK_NUMBER
+    if [[ "$DISK_NUMBER" =~ ^[0-9]+$ ]] && \
+       (( DISK_NUMBER >= 1 && DISK_NUMBER <= ${#DISKS[@]} )); then
+      SELECTED_DISK="${DISKS[$((DISK_NUMBER-1))]}"
+      break
+    fi
+    warn "Invalid selection. Try again."
+  done
+
+  echo "=== Partitions on $SELECTED_DISK ==="
+  mapfile -t PART_INFO < <(
+    lsblk -nrpo NAME,SIZE,FSTYPE,MOUNTPOINT,TYPE "$SELECTED_DISK" |
+      awk '$5=="part"{print $1 "|" $2 "|" $3 "|" $4}'
+  )
+
+  if (( ${#PART_INFO[@]} == 0 )); then
+    warn "No partitions found on $SELECTED_DISK."
+
+    if [[ -n "$ROOT_DISK" && "$SELECTED_DISK" == "$ROOT_DISK" ]]; then
+      error "Refusing to erase the detected root/system disk: $SELECTED_DISK"
+      warn "To override, you must type ERASE-SYSTEM-DISK exactly. This is intentionally difficult."
+      confirm_text "Type ERASE-SYSTEM-DISK to continue, or anything else to cancel:" "ERASE-SYSTEM-DISK" || return 1
+    fi
+
+    if ! ask_user "Create a new full-disk partition on $SELECTED_DISK? THIS ERASES DATA"; then
+      warn "Partition creation skipped."
+      return 1
+    fi
+
+    confirm_text "Final destructive confirmation. Type ERASE to wipe $SELECTED_DISK:" "ERASE" || { warn "Erase cancelled."; return 1; }
+
+    local FS_CHOICE
+    echo "Choose filesystem for the new partition:"
+    select FS_CHOICE in ext4 xfs btrfs ntfs; do
+      case "$FS_CHOICE" in
+        ext4|xfs|btrfs|ntfs) break ;;
+        *) echo "Invalid choice" ;;
+      esac
+    done
+
+    info "Creating GPT partition table on $SELECTED_DISK"
+    sudo parted -s "$SELECTED_DISK" mklabel gpt
+    sudo parted -s "$SELECTED_DISK" mkpart primary 1MiB 100%
+
+    info "Informing kernel of partition changes"
+    sudo partprobe "$SELECTED_DISK"
+    sleep 2
+
+    local NEW_PARTITION
+    NEW_PARTITION="$(lsblk -nrpo NAME,TYPE "$SELECTED_DISK" | awk '$2=="part"{print $1; exit}')"
+    if [[ -z "$NEW_PARTITION" ]]; then
+      error "Could not detect new partition on $SELECTED_DISK."
+      return 1
+    fi
+
+    info "Formatting $NEW_PARTITION as $FS_CHOICE"
+    case "$FS_CHOICE" in
+      ext4) sudo mkfs.ext4 -F "$NEW_PARTITION" ;;
+      xfs) sudo mkfs.xfs -f "$NEW_PARTITION" ;;
+      btrfs) sudo mkfs.btrfs -f "$NEW_PARTITION" ;;
+      ntfs) sudo mkfs.ntfs -f "$NEW_PARTITION" ;;
+    esac
+
+    PART_INFO=("$NEW_PARTITION|$(lsblk -dnbo SIZE "$NEW_PARTITION" | numfmt --to=iec-i --suffix=B)|$FS_CHOICE|")
+  fi
+
+  i=1
+  local LINE PNAME PSIZE PFSTYPE PMOUNT
+  for LINE in "${PART_INFO[@]}"; do
+    IFS="|" read -r PNAME PSIZE PFSTYPE PMOUNT <<< "$LINE"
+    [[ -z "$PFSTYPE" ]] && PFSTYPE="unknown"
+    [[ -z "$PMOUNT" ]] && PMOUNT="-"
+    echo "[$i] $PNAME ($PSIZE) fstype=$PFSTYPE mount=$PMOUNT"
+    i=$((i+1))
+  done
+
+  local PART_NUMBER PARTITION
+  while true; do
+    read -r -p "Select partition number: " PART_NUMBER
+    if [[ "$PART_NUMBER" =~ ^[0-9]+$ ]] && \
+       (( PART_NUMBER >= 1 && PART_NUMBER <= ${#PART_INFO[@]} )); then
+      IFS="|" read -r PARTITION _ <<< "${PART_INFO[$((PART_NUMBER-1))]}"
+      break
+    fi
+    warn "Invalid selection. Try again."
+  done
+
+  if findmnt -rn --source "$PARTITION" >/dev/null 2>&1; then
+    warn "Partition is already mounted."
+    return 0
+  fi
+
+  if sudo blkid "$PARTITION" | grep -iq bitlocker; then
+    warn "BitLocker detected."
+    install_if_missing dislocker fuse-dislocker
+    sudo mkdir -p /mnt/bitlocker /mnt/data
+    read -r -s -p "Enter BitLocker password: " BL_PASS
+    echo
+    sudo dislocker -V "$PARTITION" -u"$BL_PASS" -- /mnt/bitlocker
+    sudo mount -o loop,uid="$USERID",gid="$GROUPID" \
+      /mnt/bitlocker/dislocker-file /mnt/data
+    info "Mounted BitLocker volume at /mnt/data"
+    warn "BitLocker mount is session-only and is intentionally not added to /etc/fstab."
+    return 0
+  fi
+
+  local FS_TYPE UUID MOUNT_NAME MOUNT_DIR OPTS FSTAB_TYPE
+  FS_TYPE="$(blkid -s TYPE -o value "$PARTITION" 2>/dev/null || true)"
+  if [[ -z "$FS_TYPE" ]]; then
+    error "Could not determine filesystem type for $PARTITION."
+    return 1
+  fi
+
+  read -r -p "Enter mount folder name under /mnt (e.g. storage): " MOUNT_NAME
+  MOUNT_NAME="$(echo "$MOUNT_NAME" | tr -cd '[:alnum:]_.-')"
+  [[ -n "$MOUNT_NAME" ]] || { error "Empty/invalid mount folder name."; return 1; }
+  MOUNT_DIR="/mnt/$MOUNT_NAME"
+  sudo mkdir -p "$MOUNT_DIR"
+
+  UUID="$(blkid -s UUID -o value "$PARTITION")"
+  if [[ -z "$UUID" ]]; then
+    error "Could not determine UUID for $PARTITION."
+    return 1
+  fi
+
+  case "$FS_TYPE" in
+    ntfs)
+      FSTAB_TYPE="ntfs3"
+      OPTS="defaults,nofail,x-systemd.device-timeout=5s,uid=$USERID,gid=$GROUPID,umask=000"
+      ;;
+    vfat|fat|exfat)
+      FSTAB_TYPE="$FS_TYPE"
+      OPTS="defaults,nofail,x-systemd.device-timeout=5s,uid=$USERID,gid=$GROUPID,umask=000"
+      ;;
+    *)
+      FSTAB_TYPE="$FS_TYPE"
+      OPTS="defaults,nofail,x-systemd.device-timeout=5s"
+      ;;
+  esac
+
+  backup_file /etc/fstab
+  if ! sudo grep -q "UUID=$UUID" /etc/fstab; then
+    echo "UUID=$UUID $MOUNT_DIR $FSTAB_TYPE $OPTS 0 2" | sudo tee -a /etc/fstab >/dev/null
+  else
+    warn "UUID already exists in /etc/fstab; not adding duplicate."
+  fi
+
+  sudo mount -a
+  info "Disk mounted at $MOUNT_DIR"
+}
+
+if ask_user "Setup a second internal disk (Mount/BitLocker)?"; then
+  setup_secondary_disk
+fi
+
+# ============================================================
+# FINAL
+# ============================================================
+if ask_user "Reboot now?"; then
+  sudo reboot
+else
+  info "Reboot skipped. A logout/login is recommended for KDE, Docker group, fonts, and keyboard layout changes."
+fi
