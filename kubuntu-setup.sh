@@ -342,6 +342,49 @@ sys_fonts() {
   fc-cache -f >/dev/null 2>&1 || true
 }
 
+microsoft_fonts_install() {
+  warn "Microsoft Core Fonts are proprietary and require accepting Microsoft's EULA."
+  ask_user "Accept the Microsoft Core Fonts EULA and install them?" || {
+    warn "Microsoft Core Fonts installation skipped."
+    return 0
+  }
+
+  apt_install_existing software-properties-common fontconfig cabextract
+
+  # ttf-mscorefonts-installer is in Ubuntu/Kubuntu multiverse.
+  sudo add-apt-repository -y multiverse || true
+  mark_apt_stale
+  refresh_apt
+
+  if ! apt_has_pkg ttf-mscorefonts-installer; then
+    warn "ttf-mscorefonts-installer was not found. Make sure multiverse is enabled."
+    return 0
+  fi
+
+  # Pre-accept the EULA for noninteractive installation.
+  echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | sudo debconf-set-selections
+  echo "ttf-mscorefonts-installer msttcorefonts/present-mscorefonts-eula note" | sudo debconf-set-selections
+
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall ttf-mscorefonts-installer || {
+    warn "Microsoft Core Fonts installer failed. It downloads fonts during post-install; network/source availability can affect this."
+    return 0
+  }
+
+  sudo fc-cache -f >/dev/null 2>&1 || true
+
+  info "Checking Microsoft Core Fonts through fontconfig:"
+  fc-match -f 'Arial -> %{file}\n' Arial || true
+  fc-match -f 'Times New Roman -> %{file}\n' "Times New Roman" || true
+  fc-match -f 'Verdana -> %{file}\n' Verdana || true
+
+  if fc-match -f '%{file}\n' Arial | grep -qi 'msttcorefonts'; then
+    info "Microsoft Core Fonts appear to be installed."
+  else
+    warn "Arial did not resolve to msttcorefonts. The installer may not have completed its font download."
+    warn "Try: sudo apt-get install --reinstall ttf-mscorefonts-installer"
+  fi
+}
+
 install_meslo_nerd_fonts() {
   apt_install_existing curl fontconfig
 
@@ -1241,6 +1284,7 @@ main() {
     "BASE_UTILS"        "Base utilities + Flatpak + Discover backend"                      ON \
     "GREEK"             "Greek language, keyboard, dictionaries"                           ON \
     "FONTS"             "Noto, Roboto, Inter, JetBrains Mono, Fira Code"                    ON \
+    "MS_FONTS"          "Microsoft Core Fonts via ttf-mscorefonts-installer"                OFF \
     "MESLO_NERD"        "MesloLGS Nerd Fonts for terminal themes"                          OFF \
     "FONTCONFIG"        "User font rendering tweaks"                                       ON \
     "SECURITY"          "UFW, unattended upgrades, AppArmor tools, Lynis, rkhunter"         ON \
@@ -1279,6 +1323,7 @@ main() {
   is_sel "BASE_UTILS"        && run_step "Base utilities"                   sys_base_utils
   is_sel "GREEK"             && run_step "Greek language support"           sys_greek
   is_sel "FONTS"             && run_step "Fonts"                            sys_fonts
+  is_sel "MS_FONTS"          && run_step "Microsoft Core Fonts"             microsoft_fonts_install
   is_sel "MESLO_NERD"        && run_step "MesloLGS Nerd Fonts"              install_meslo_nerd_fonts
   is_sel "FONTCONFIG"        && run_step "Fontconfig"                       sys_fontconfig
   is_sel "SECURITY"          && run_step "Security tools"                   sys_security
