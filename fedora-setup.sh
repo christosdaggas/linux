@@ -4,7 +4,8 @@ shopt -s extglob
 
 # ============================================================
 # Fedora 44 / GNOME 50 Interactive Workstation Setup
-# Revised for DNF5, GNOME 50, fwupd, Nerd Fonts, and extensions.
+# Revised for DNF5, GNOME 50, fwupd, Nerd Fonts, ROCm, TPM2/LUKS2, and extensions.
+# Includes GNOME Software repo_gpgcheck=1 workaround for Fedora 44.
 # ============================================================
 
 # -------------------- UI / HELPERS --------------------------
@@ -39,7 +40,6 @@ backup_file(){
 
 real_user(){ printf '%s\n' "${SUDO_USER:-${USER:-$(id -un)}}"; }
 real_home(){ getent passwd "$(real_user)" | cut -d: -f6; }
-
 require_fedora(){
   if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
@@ -93,6 +93,15 @@ safe_gsettings_set(){
   gsettings set "$schema" "$key" "$value" || warn "Failed gsetting: $schema $key"
 }
 
+show_package_group(){
+  local title="$1" description="$2"
+  shift 2
+  echo
+  info "$title"
+  echo "  $description"
+  echo "  Packages: $*"
+}
+
 set_dnf_main_option(){
   local key="$1" value="$2" file="/etc/dnf/dnf.conf"
   sudo touch "$file"
@@ -114,6 +123,54 @@ add_repo_from_url(){
   fi
   warn "dnf config-manager failed; falling back to writing $fallback_file directly."
   sudo curl -fsSL --retry 3 --connect-timeout 20 -o "$fallback_file" "$url"
+}
+
+set_repo_gpgcheck_zero(){
+  local repo="$1"
+  install_if_missing dnf5-plugins
+  if sudo dnf config-manager setopt "${repo}.repo_gpgcheck=0"; then
+    info "Set ${repo}.repo_gpgcheck=0"
+  else
+    warn "Could not set ${repo}.repo_gpgcheck=0. The repo may not exist yet."
+  fi
+}
+
+list_repo_gpgcheck_one(){
+  sudo awk '
+    BEGIN { repo="" }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      repo=$0
+      gsub(/^[[:space:]]*\[/, "", repo)
+      gsub(/\][[:space:]]*$/, "", repo)
+    }
+    /^[[:space:]]*repo_gpgcheck[[:space:]]*=[[:space:]]*1[[:space:]]*$/ && repo != "" {
+      print repo
+    }
+  ' /etc/yum.repos.d/*.repo 2>/dev/null | sort -u
+}
+
+apply_repo_gpgcheck_workaround(){
+  # Fedora 44 / DNF5 daemon bug workaround:
+  # GNOME Software can hang when a repo has repo_gpgcheck=1.
+  # Keep package gpgcheck=1, but disable repository metadata GPG verification
+  # only for repos that currently set repo_gpgcheck=1.
+  local repos=() repo
+  install_if_missing dnf5-plugins
+
+  mapfile -t repos < <(list_repo_gpgcheck_one || true)
+
+  if (( ${#repos[@]} == 0 )); then
+    info "No repo files with repo_gpgcheck=1 were found in /etc/yum.repos.d."
+    return 0
+  fi
+
+  warn "Found repositories with repo_gpgcheck=1: ${repos[*]}"
+  for repo in "${repos[@]}"; do
+    set_repo_gpgcheck_zero "$repo"
+  done
+
+  info "Verification command: grep -r 'repo_gpgcheck=1' /etc/yum.repos.d/"
+  warn "Revert later, after the Fedora/DNF5 bug is fixed, with: sudo dnf config-manager unsetopt REPOID.repo_gpgcheck"
 }
 
 ensure_rpmfusion(){
@@ -277,6 +334,175 @@ install_virtualization_stack(){
   fi
 
   info "Virtualization stack installed. Log out/in or reboot before using libvirt group permissions."
+}
+
+install_rocm_stack(){
+  info "Installing Fedora ROCm stack for AMD GPU compute..."
+  install_if_missing pciutils rocm rocminfo
+
+  if command -v lspci &>/dev/null; then
+    local gpu_lines
+    gpu_lines="$(lspci -nn | grep -Ei 'VGA|3D|Display' || true)"
+    if grep -Eiq 'AMD|ATI' <<<"$gpu_lines"; then
+      info "AMD graphics hardware detected."
+    else
+      warn "No AMD GPU was detected by lspci. ROCm may install, but GPU compute may not work on this hardware."
+    fi
+  fi
+
+  sudo getent group render >/dev/null && sudo usermod -aG render "$(real_user)" || true
+  sudo getent group video  >/dev/null && sudo usermod -aG video  "$(real_user)" || true
+
+  if ask_user "Install ROCm development packages too (rocm-devel)?"; then
+    install_if_missing rocm-devel
+  fi
+
+  info "ROCm installed. Log out/in or reboot so render/video group membership applies."
+  info "After reboot, test with: rocminfo"
+}
+
+
+update_crypttab_for_tpm2(){
+  local uuid="$1" pcrs="$2" file="/etc/crypttab" tmp
+  local opt="tpm2-device=auto,tpm2-pcrs=${pcrs}"
+
+  if [[ ! -f "$file" ]]; then
+    warn "$file does not exist. Cannot automatically update initramfs unlock configuration."
+    warn "Add this option manually to the matching crypttab line: $opt"
+    return 1
+  fi
+
+  backup_file "$file"
+  tmp="$(mktemp)"
+
+  if ! awk -v uuid="$uuid" -v opt="$opt" '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
+    {
+      if ($1 == "luks-" uuid || $2 == "UUID=" uuid || $2 == "/dev/disk/by-uuid/" uuid || index($0, uuid) > 0) {
+        found=1
+        if (NF < 3) {
+          print
+          next
+        }
+        if (NF == 3) {
+          print $1, $2, $3, opt
+          changed=1
+          next
+        }
+        if ($4 ~ /(^|,)tpm2-device=auto(,|$)/) {
+          print
+          next
+        }
+        if ($4 == "-" || $4 == "none") {
+          $4=opt
+        } else {
+          $4=$4 "," opt
+        }
+        print $1, $2, $3, $4
+        changed=1
+        next
+      }
+      print
+    }
+    END { if (!found) exit 2 }
+  ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    warn "Could not find a matching /etc/crypttab line for UUID=$uuid."
+    warn "Add this option manually to the matching crypttab line, then run: sudo dracut -f"
+    warn "$opt"
+    return 1
+  fi
+
+  sudo cp "$tmp" "$file"
+  rm -f "$tmp"
+  info "Updated $file for TPM2 auto-unlock."
+}
+
+enable_luks2_tpm2_unlock(){
+  warn "This adds TPM2 as an alternative LUKS2 unlock method. Keep your passphrase slot as fallback."
+  warn "If firmware, Secure Boot, bootloader, kernel, initramfs, or PCR policy changes, TPM2 unlock may fail and you will need the passphrase."
+
+  install_if_missing cryptsetup dracut tpm2-tools
+
+  if ! command -v systemd-cryptenroll &>/dev/null; then
+    error "systemd-cryptenroll was not found. Install/repair systemd first."
+    return 1
+  fi
+
+  info "Detected TPM2 devices:"
+  if ! systemd-cryptenroll --tpm2-device=list; then
+    warn "No usable TPM2 device was detected. Enable TPM2/fTPM/PTT in firmware/UEFI, then try again."
+    return 1
+  fi
+
+  info "Detected LUKS devices:"
+  mapfile -t LUKS_DEVS < <(blkid -t TYPE=crypto_LUKS -o device | sort -u)
+  if (( ${#LUKS_DEVS[@]} == 0 )); then
+    error "No LUKS devices were found."
+    return 1
+  fi
+
+  local i=1 dev selected version uuid pcrs
+  for dev in "${LUKS_DEVS[@]}"; do
+    uuid="$(blkid -s UUID -o value "$dev" 2>/dev/null || true)"
+    version="$(sudo cryptsetup luksDump "$dev" 2>/dev/null | awk '/Version:/ {print $2; exit}')"
+    echo "[$i] $dev UUID=${uuid:-unknown} LUKS${version:-unknown}"
+    i=$((i+1))
+  done
+
+  while true; do
+    read -rp "Select LUKS device number for TPM2 enrollment: " i
+    if [[ "$i" =~ ^[0-9]+$ ]] && (( i >= 1 && i <= ${#LUKS_DEVS[@]} )); then
+      selected="${LUKS_DEVS[$((i-1))]}"
+      break
+    fi
+    warn "Invalid selection. Try again."
+  done
+
+  version="$(sudo cryptsetup luksDump "$selected" 2>/dev/null | awk '/Version:/ {print $2; exit}')"
+  if [[ "$version" != "2" ]]; then
+    error "$selected is not LUKS2. systemd-cryptenroll TPM2 enrollment requires LUKS2."
+    return 1
+  fi
+
+  uuid="$(blkid -s UUID -o value "$selected")"
+  [[ -n "$uuid" ]] || { error "Could not read UUID for $selected"; return 1; }
+
+  echo "Choose TPM2 PCR policy:"
+  echo "  [1] PCR 7 only: practical for Fedora desktops; usually survives kernel/initramfs updates if Secure Boot policy is stable."
+  echo "  [2] Fedora Magazine strict example: 0+1+2+3+4+5+7+9; more tamper-sensitive, but may require re-enrollment after updates/firmware changes."
+  echo "  [3] Custom PCR list, e.g. 7 or 0+1+2+3+4+5+7+9"
+  read -rp "Choice [1]: " pcr_choice
+  case "${pcr_choice:-1}" in
+    1) pcrs="7" ;;
+    2) pcrs="0+1+2+3+4+5+7+9" ;;
+    3)
+      while true; do
+        read -rp "Enter PCR list: " pcrs
+        [[ "$pcrs" =~ ^[0-9]+(\+[0-9]+)*$ ]] && break
+        warn "Invalid PCR list. Use a format like: 7 or 0+1+2+3+4+5+7+9"
+      done
+      ;;
+    *) pcrs="7" ;;
+  esac
+
+  warn "About to enroll TPM2 unlock for $selected using PCRs: $pcrs"
+  warn "You will be asked for the existing LUKS passphrase."
+  ask_user "Continue with TPM2 enrollment?" || return 0
+
+  sudo mkdir -p /etc/dracut.conf.d
+  echo 'add_dracutmodules+=" tpm2-tss "' | sudo tee /etc/dracut.conf.d/tpm2.conf >/dev/null
+
+  sudo systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs="$pcrs" "$selected"
+
+  if update_crypttab_for_tpm2 "$uuid" "$pcrs"; then
+    info "Rebuilding current initramfs with dracut..."
+    sudo dracut -f
+    info "TPM2 LUKS2 auto-unlock configured for $selected. Reboot to test."
+    warn "Do not remove your LUKS passphrase. It is your recovery path if TPM2 unlock fails."
+  else
+    warn "TPM2 enrollment completed, but crypttab was not updated automatically. Initramfs was not rebuilt."
+  fi
 }
 
 run_firmware_updates(){
@@ -444,19 +670,19 @@ setup_secondary_disk(){
   case "$FS_TYPE" in
     ntfs)
       FSTAB_TYPE="ntfs3"
-      OPTS="defaults,uid=$USERID,gid=$GROUPID,umask=000"
+      OPTS="defaults,uid=$USERID,gid=$GROUPID,umask=000,nofail,x-systemd.device-timeout=10s"
       ;;
     vfat|fat|exfat)
       FSTAB_TYPE="$FS_TYPE"
-      OPTS="defaults,uid=$USERID,gid=$GROUPID,umask=000"
+      OPTS="defaults,uid=$USERID,gid=$GROUPID,umask=000,nofail,x-systemd.device-timeout=10s"
       ;;
     btrfs)
       FSTAB_TYPE="btrfs"
-      OPTS="defaults,compress=zstd:1"
+      OPTS="defaults,compress=zstd:1,nofail,x-systemd.device-timeout=10s"
       ;;
     *)
       FSTAB_TYPE="$FS_TYPE"
-      OPTS="defaults"
+      OPTS="defaults,nofail,x-systemd.device-timeout=10s"
       ;;
   esac
 
@@ -483,7 +709,7 @@ trap 'kill "$SUDO_PID" 2>/dev/null || true' EXIT
 if ask_user "Optimize DNF5 configuration?"; then
   backup_file /etc/dnf/dnf.conf
   set_dnf_main_option max_parallel_downloads 10
-  set_dnf_main_option fastestmirror True
+  set_dnf_main_option fastestmirror False
   set_dnf_main_option keepcache True
   set_dnf_main_option installonly_limit 3
   info "DNF configuration updated."
@@ -522,10 +748,25 @@ SECURITY_PACKAGES=(firewalld fail2ban lynis rkhunter)
 TWEAK_PACKAGES=(gnome-color-manager zram-generator-defaults)
 PRODUCTIVITY_APPS=(filezilla flatseal decibels dconf-editor papers showtime)
 
-ask_user "Install CORE packages?" && install_if_missing "${CORE_PACKAGES[@]}"
-ask_user "Install SECURITY packages?" && install_if_missing "${SECURITY_PACKAGES[@]}"
-ask_user "Install TWEAK packages?" && install_if_missing "${TWEAK_PACKAGES[@]}"
-ask_user "Install PRODUCTIVITY apps?" && install_if_missing "${PRODUCTIVITY_APPS[@]}"
+show_package_group "CORE packages" \
+  "Base command-line/system tools used by this script: downloads, archives, JSON parsing, certificates, fonts, DNF5 plugins, and FUSE support." \
+  "${CORE_PACKAGES[@]}"
+ask_user "Install CORE packages listed above?" && install_if_missing "${CORE_PACKAGES[@]}"
+
+show_package_group "SECURITY packages" \
+  "Firewall, SSH/login brute-force protection, local security audit, and rootkit scanning tools." \
+  "${SECURITY_PACKAGES[@]}"
+ask_user "Install SECURITY packages listed above?" && install_if_missing "${SECURITY_PACKAGES[@]}"
+
+show_package_group "TWEAK packages" \
+  "Small system/desktop helpers: color profile tools and Fedora's default zram generator configuration." \
+  "${TWEAK_PACKAGES[@]}"
+ask_user "Install TWEAK packages listed above?" && install_if_missing "${TWEAK_PACKAGES[@]}"
+
+show_package_group "PRODUCTIVITY apps" \
+  "Desktop apps: FileZilla, Flatseal, Decibels, dconf Editor, Papers document viewer, and Showtime video player." \
+  "${PRODUCTIVITY_APPS[@]}"
+ask_user "Install PRODUCTIVITY apps listed above?" && install_if_missing "${PRODUCTIVITY_APPS[@]}"
 
 # -------------------- SECURITY / FIREWALL -------------------
 if rpm -q usbguard &>/dev/null; then
@@ -563,6 +804,11 @@ AUTOEOF
 fi
 
 getenforce 2>/dev/null | grep -q Enforcing || warn "SELinux is not enforcing."
+
+# -------------------- GNOME SOFTWARE REPO_GPGCHECK BUG FIX --
+if ask_user "Apply GNOME Software repo_gpgcheck=1 workaround for existing third-party repos?"; then
+  apply_repo_gpgcheck_workaround
+fi
 
 # -------------------- SPEED / PERFORMANCE -------------------
 if ask_user "Apply conservative system speed/performance optimizations?"; then
@@ -621,11 +867,12 @@ if ask_user "Enable RPM Fusion (free + nonfree)?"; then
 fi
 
 # -------------------- SOFTWARE BLOCKS -----------------------
-if ask_user "Install Tailscale & Trayscale?"; then
+if ask_user "Install Tailscale VPN CLI/daemon?"; then
   install_if_missing curl
   sudo curl -fsSL --retry 3 --connect-timeout 20 -o /etc/yum.repos.d/tailscale.repo \
     https://pkgs.tailscale.com/stable/fedora/tailscale.repo
-  install_if_missing tailscale trayscale
+  set_repo_gpgcheck_zero tailscale-stable
+  install_if_missing tailscale
   ask_user "Enable tailscaled service?" && sudo systemctl enable --now tailscaled
 fi
 
@@ -646,10 +893,11 @@ name=VSCodium
 baseurl=https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/rpms/
 enabled=1
 gpgcheck=1
-repo_gpgcheck=1
+repo_gpgcheck=0
 gpgkey=https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg
 metadata_expire=1h
 EOF_VSCODIUM
+  set_repo_gpgcheck_zero vscodium
   install_if_missing code codium
 fi
 
@@ -667,6 +915,10 @@ fi
 
 ask_user "Install Git?" && install_if_missing git
 
+if ask_user "Install AMD ROCm GPU compute stack?"; then
+  install_rocm_stack
+fi
+
 if ask_user "Install Docker CE?"; then
   add_repo_from_url https://download.docker.com/linux/fedora/docker-ce.repo /etc/yum.repos.d/docker-ce.repo
   if ! sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
@@ -678,7 +930,6 @@ if ask_user "Install Docker CE?"; then
   ask_user "Enable Docker service?" && sudo systemctl enable --now docker
   sudo getent group docker >/dev/null || sudo groupadd docker
   sudo usermod -aG docker "$(real_user)"
-
 fi
 
 if ask_user "Install virt-manager and KVM/QEMU/libvirt virtualization stack?"; then
@@ -730,12 +981,10 @@ if has_gnome_shell && ask_user "Install Fedora-packaged GNOME Shell extensions?"
   info "GNOME Shell detected: $(gnome-shell --version)"
   install_if_missing \
     gnome-shell-extension-appindicator \
-    gnome-shell-extension-user-theme \
-    gnome-shell-extension-blur-my-shell
+    gnome-shell-extension-user-theme
 
   enable_gnome_extension appindicatorsupport@rgcjonas.gmail.com
   enable_gnome_extension user-theme@gnome-shell-extensions.gcampax.github.com
-  enable_gnome_extension blur-my-shell@aunetx
 
   if ask_user "Install Dash to Dock? Choose NO if you prefer Dash to Panel"; then
     install_if_missing gnome-shell-extension-dash-to-dock
@@ -746,11 +995,9 @@ if has_gnome_shell && ask_user "Install Fedora-packaged GNOME Shell extensions?"
   fi
 fi
 
-if has_gnome_shell && ask_user "Install extra GNOME extensions from extensions.gnome.org (ArcMenu, Vitals, DING)?"; then
+if has_gnome_shell && ask_user "Install extra GNOME extensions from extensions.gnome.org (ArcMenu...)?"; then
   install_if_missing gnome-menus lm_sensors
   install_ego_extension 3628 arcmenu@arcmenu.com "ArcMenu"
-  install_ego_extension 1460 Vitals@CoreCoding.com "Vitals"
-  install_ego_extension 2087 ding@rastersoft.com "Desktop Icons NG"
   warn "For newly installed extensions on Wayland, log out and back in before judging whether they loaded."
 fi
 
@@ -788,13 +1035,10 @@ if ask_user "Install Flatpak user applications?"; then
 
   APPS=(
     org.signal.Signal
-    io.missioncenter.MissionCenter
-    io.gitlab.news_flash.NewsFlash
     com.mattjakeman.ExtensionManager
     it.mijorus.gearlever
-    org.gustavoperedo.FontDownloader
-    io.github.flattool.Ignition
   )
+  # Whaler / Docker GUI apps are intentionally not installed here.
 
   for a in "${APPS[@]}"; do
     flatpak install -y --noninteractive flathub "$a" || warn "Flatpak failed: $a"
@@ -886,6 +1130,10 @@ fi
 if ask_user "Advanced: apply AMD kernel args? Only use if you know these exact args are needed"; then
   sudo grubby --update-kernel=ALL --args="amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856"
   sudo grubby --info=DEFAULT | grep '^args='
+fi
+
+if ask_user "Advanced: enable TPM2 auto-unlock for a LUKS2 encrypted disk?"; then
+  enable_luks2_tpm2_unlock
 fi
 
 if ask_user "Check firmware updates (fwupd)?"; then
