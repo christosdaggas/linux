@@ -4,8 +4,9 @@ shopt -s extglob
 
 # ============================================================
 # Fedora 44 / GNOME 50 Interactive Workstation Setup
-# Revised for DNF5, GNOME 50, fwupd, Nerd Fonts, ROCm, TPM2/LUKS2, and extensions.
-# Includes GNOME Software repo_gpgcheck=1 workaround for Fedora 44.
+# Revised for DNF5, GNOME 50, fwupd, Nerd Fonts, ROCm, TPM2/LUKS2,
+# GNOME extensions, Docker Engine, Docker Desktop for Linux, Proton VPN,
+# SSH, GNOME Remote Desktop, and late-stage repository workarounds.
 # ============================================================
 
 # -------------------- UI / HELPERS --------------------------
@@ -40,6 +41,21 @@ backup_file(){
 
 real_user(){ printf '%s\n' "${SUDO_USER:-${USER:-$(id -un)}}"; }
 real_home(){ getent passwd "$(real_user)" | cut -d: -f6; }
+
+run_as_real_user(){
+  local username uid
+  username="$(real_user)"
+  uid="$(id -u "$username")"
+  sudo -u "$username" -H env \
+    XDG_RUNTIME_DIR="/run/user/${uid}" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
+    "$@"
+}
+
+run_user_systemctl(){
+  run_as_real_user systemctl --user "$@"
+}
+
 require_fedora(){
   if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
@@ -334,6 +350,306 @@ install_virtualization_stack(){
   fi
 
   info "Virtualization stack installed. Log out/in or reboot before using libvirt group permissions."
+}
+
+ensure_docker_desktop_pass_initialized(){
+  local username home gpg_id gpg_name gpg_email host_fqdn
+  username="$(real_user)"
+  home="$(real_home)"
+
+  install_if_missing pass gnupg2 pinentry
+
+  if [[ -f "$home/.password-store/.gpg-id" ]]; then
+    info "pass is already initialized for $username."
+    return 0
+  fi
+
+  gpg_id="$(run_as_real_user bash -lc 'gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '\''$1=="sec" {print $5; exit}'\''' || true)"
+
+  if [[ -z "$gpg_id" ]]; then
+    warn "No existing GPG secret key was found for $username. Docker Desktop for Linux uses pass for credential storage."
+    if ask_user "Generate a local GPG key now for Docker Desktop/pass?"; then
+      read -rp "GPG name [${username}]: " gpg_name
+      gpg_name="${gpg_name:-$username}"
+      host_fqdn="$(hostname -f 2>/dev/null || hostname || printf 'localhost')"
+      read -rp "GPG email [${username}@${host_fqdn}.local]: " gpg_email
+      gpg_email="${gpg_email:-${username}@${host_fqdn}.local}"
+
+      info "Generating GPG key for ${gpg_name} <${gpg_email}>. If prompted, choose a passphrase you can remember."
+      if ! run_as_real_user gpg --quick-generate-key "${gpg_name} <${gpg_email}>" default default 2y; then
+        warn "GPG key generation failed or was cancelled. Docker Desktop can still be installed, but sign-in may warn until pass is initialized."
+        warn "Manual fix later: gpg --generate-key ; pass init YOUR_GPG_ID"
+        return 0
+      fi
+
+      gpg_id="$(run_as_real_user bash -lc 'gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '\''$1=="sec" {print $5; exit}'\''' || true)"
+    else
+      warn "Skipping pass initialization. Docker Desktop sign-in may warn until you run: pass init YOUR_GPG_ID"
+      return 0
+    fi
+  fi
+
+  if [[ -n "$gpg_id" ]]; then
+    info "Initializing pass for Docker Desktop credentials with GPG key: $gpg_id"
+    run_as_real_user pass init "$gpg_id" || warn "pass init failed. Docker Desktop sign-in may warn until pass is initialized manually."
+  else
+    warn "Could not determine a GPG key ID. Docker Desktop sign-in may warn until pass is initialized manually."
+  fi
+}
+
+install_docker_desktop_stack(){
+  info "Installing Docker Desktop for Linux on Fedora..."
+
+  warn "Docker Desktop commercial use in larger enterprises may require a paid Docker subscription. Review Docker's terms before using it in that context."
+  warn "Docker Desktop Fedora documentation currently lists Fedora 42 or Fedora 43 as the Fedora prerequisite. This Fedora 44 script will attempt the install, but Docker may not officially support this target yet."
+
+  if [[ "$(uname -m)" != "x86_64" ]]; then
+    error "Docker Desktop Linux RPM is for x86_64/amd64. Detected architecture: $(uname -m)."
+    return 1
+  fi
+
+  if ! grep -Eq '(vmx|svm)' /proc/cpuinfo 2>/dev/null; then
+    warn "CPU virtualization extensions were not detected. Docker Desktop runs a VM and needs virtualization enabled in firmware/BIOS."
+  else
+    info "CPU virtualization extensions detected."
+  fi
+
+  install_if_missing curl dnf5-plugins qemu-kvm qemu-img pass gnupg2 pinentry gnome-terminal procps-ng
+
+  if grep -q GenuineIntel /proc/cpuinfo 2>/dev/null; then
+    sudo modprobe kvm kvm_intel 2>/dev/null || warn "Could not load kvm_intel now. Check firmware virtualization settings if Docker Desktop fails."
+  elif grep -q AuthenticAMD /proc/cpuinfo 2>/dev/null; then
+    sudo modprobe kvm kvm_amd 2>/dev/null || warn "Could not load kvm_amd now. Check firmware virtualization settings if Docker Desktop fails."
+  else
+    sudo modprobe kvm 2>/dev/null || true
+  fi
+
+  if [[ -e /dev/kvm ]]; then
+    sudo getent group kvm >/dev/null && sudo usermod -aG kvm "$(real_user)" || true
+    info "/dev/kvm exists. Added $(real_user) to kvm group where available. Log out/in or reboot for group membership to apply."
+  else
+    warn "/dev/kvm was not found. Docker Desktop may not start until KVM is available."
+  fi
+
+  if has_gnome_shell; then
+    install_if_missing gnome-extensions-app gnome-shell-extension-appindicator
+    enable_gnome_extension appindicatorsupport@rgcjonas.gmail.com
+  fi
+
+  add_repo_from_url https://download.docker.com/linux/fedora/docker-ce.repo /etc/yum.repos.d/docker-ce.repo
+
+  local tmp_rpm docker_desktop_url
+  tmp_rpm="$(mktemp --suffix=.rpm)"
+  docker_desktop_url="https://desktop.docker.com/linux/main/amd64/docker-desktop-x86_64.rpm"
+
+  info "Downloading latest Docker Desktop RPM..."
+  if ! curl -fL --retry 3 --connect-timeout 30 -o "$tmp_rpm" "$docker_desktop_url"; then
+    rm -f "$tmp_rpm"
+    warn "Docker Desktop RPM download failed. Check network/DNS or download it manually from Docker's Fedora Desktop page."
+    return 1
+  fi
+
+  info "Installing Docker Desktop RPM with dnf..."
+  if ! sudo dnf -y install "$tmp_rpm"; then
+    rm -f "$tmp_rpm"
+    warn "Docker Desktop RPM install failed. On Fedora 44 this may be due to unsupported Fedora Desktop metadata or dependency availability."
+    return 1
+  fi
+  rm -f "$tmp_rpm"
+
+  ensure_docker_desktop_pass_initialized
+
+  if systemctl list-unit-files docker.service --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq 'docker.service'; then
+    warn "Docker Desktop and Docker Engine can coexist, but both running together can cause port/resource conflicts."
+    if ask_user "Stop and disable system Docker Engine while using Docker Desktop?"; then
+      sudo systemctl disable --now docker docker.socket containerd 2>/dev/null || warn "Could not disable one or more Docker Engine units."
+    fi
+  fi
+
+  if ask_user "Enable Docker Desktop to start when you sign in?"; then
+    run_user_systemctl enable docker-desktop || warn "Could not enable Docker Desktop user service. Try manually: systemctl --user enable docker-desktop"
+  fi
+
+  if ask_user "Start Docker Desktop now?"; then
+    run_user_systemctl start docker-desktop || warn "Could not start Docker Desktop user service. Try manually: systemctl --user start docker-desktop"
+  fi
+
+  info "Docker Desktop installed. First launch requires accepting Docker Desktop terms in the UI. Then sign in from the Docker Desktop dashboard."
+  info "If Docker Desktop cannot access KVM immediately, log out/in or reboot so kvm group membership applies."
+}
+
+
+enable_ssh_server(){
+  info "Enabling SSH server for remote shell access..."
+  install_if_missing openssh-server firewalld
+
+  sudo systemctl enable --now sshd
+  sudo systemctl enable --now firewalld
+  sudo firewall-cmd --permanent --add-service=ssh || warn "Could not add SSH service to firewalld."
+  sudo firewall-cmd --reload || true
+
+  local ip
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  info "SSH enabled. Example: ssh $(real_user)@${ip:-YOUR_MACHINE_IP}"
+  warn "For Internet-facing access, prefer SSH keys and/or VPN. Do not expose password SSH directly to the Internet unless you harden sshd_config."
+}
+
+setup_gnome_file_sharing_webdav(){
+  info "Configuring GNOME Public folder / WebDAV file sharing..."
+  install_if_missing gnome-user-share httpd httpd-tools avahi firewalld
+
+  local public_dir
+  public_dir="$(real_home)/Public"
+  mkdir -p "$public_dir"
+  sudo chown "$(real_user):$(id -gn "$(real_user)")" "$public_dir" 2>/dev/null || true
+
+  if ask_user "Allow GNOME Public folder sharing without a password?"; then
+    run_as_real_user gsettings set org.gnome.desktop.file-sharing require-password 'never' || \
+      warn "Could not set GNOME file-sharing password policy."
+  else
+    run_as_real_user gsettings set org.gnome.desktop.file-sharing require-password 'always' || \
+      warn "Could not set GNOME file-sharing password policy."
+  fi
+
+  if run_user_systemctl start gnome-user-share-webdav.service; then
+    info "Started GNOME user WebDAV file sharing service."
+  else
+    warn "Could not start gnome-user-share-webdav.service now. It may require an active graphical user session."
+  fi
+
+  sudo systemctl enable --now avahi-daemon || warn "Could not enable avahi-daemon."
+  sudo systemctl enable --now firewalld || true
+  sudo firewall-cmd --permanent --add-service=mdns || true
+
+  if sudo firewall-cmd --get-services 2>/dev/null | tr ' ' '\n' | grep -Fxq webdav; then
+    sudo firewall-cmd --permanent --add-service=webdav || true
+  else
+    sudo firewall-cmd --permanent --add-port=8080/tcp || true
+  fi
+  sudo firewall-cmd --reload || true
+
+  info "GNOME Public folder sharing configured for $(real_user)."
+}
+
+setup_gnome_system_rdp(){
+  info "Configuring GNOME Remote Desktop system-level RDP login..."
+  install_if_missing gnome-remote-desktop freerdp firewalld
+
+  if ! command -v grdctl &>/dev/null; then
+    error "grdctl was not found after installing gnome-remote-desktop. Cannot configure GNOME Remote Desktop automatically."
+    return 1
+  fi
+  if ! command -v winpr-makecert &>/dev/null; then
+    error "winpr-makecert was not found after installing freerdp. Cannot generate RDP TLS certificate automatically."
+    return 1
+  fi
+  if ! sudo getent passwd gnome-remote-desktop >/dev/null; then
+    error "System user gnome-remote-desktop was not found. Reinstall gnome-remote-desktop and try again."
+    return 1
+  fi
+
+  local rdp_user rdp_pass rdp_pass_confirm cert_dir ip
+  if ask_user "Use your Fedora username ($(real_user)) as the RDP gateway username?"; then
+    rdp_user="$(real_user)"
+  else
+    read -rp "RDP gateway username, e.g. rdpadmin: " rdp_user
+    if [[ -z "$rdp_user" ]]; then
+      warn "Empty RDP username. Skipping GNOME Remote Desktop configuration."
+      return 0
+    fi
+  fi
+
+  warn "The RDP gateway password is stored separately from your Fedora account password."
+  warn "You may type the same password as your Fedora login password, but it will not stay synchronized automatically."
+  while true; do
+    read -rsp "RDP gateway password: " rdp_pass
+    echo
+    if [[ -z "$rdp_pass" ]]; then
+      warn "Empty RDP password. Try again or press Ctrl+C to cancel."
+      continue
+    fi
+    read -rsp "Confirm RDP gateway password: " rdp_pass_confirm
+    echo
+    if [[ "$rdp_pass" == "$rdp_pass_confirm" ]]; then
+      break
+    fi
+    warn "Passwords did not match. Try again."
+  done
+  unset rdp_pass_confirm
+
+  cert_dir="/var/lib/gnome-remote-desktop/.local/share/gnome-remote-desktop"
+  sudo -u gnome-remote-desktop mkdir -p "$cert_dir"
+
+  if [[ ! -f "$cert_dir/rdp-tls.crt" || ! -f "$cert_dir/rdp-tls.key" ]]; then
+    sudo -u gnome-remote-desktop winpr-makecert \
+      -silent -rdp \
+      -path "$cert_dir" \
+      rdp-tls
+  fi
+
+  sudo grdctl --system rdp set-tls-key "$cert_dir/rdp-tls.key"
+  sudo grdctl --system rdp set-tls-cert "$cert_dir/rdp-tls.crt"
+  printf '%s\n%s\n' "$rdp_user" "$rdp_pass" | sudo grdctl --system rdp set-credentials
+  unset rdp_pass
+  sudo grdctl --system rdp enable
+
+  sudo systemctl enable --now gdm.service
+  sudo systemctl enable --now gnome-remote-desktop.service
+  sudo systemctl set-default graphical.target
+
+  sudo systemctl enable --now firewalld
+  sudo firewall-cmd --permanent --add-service=rdp || sudo firewall-cmd --permanent --add-port=3389/tcp
+  sudo firewall-cmd --reload || true
+
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  info "GNOME Remote Desktop RDP enabled. Connect to ${ip:-YOUR_MACHINE_IP}:3389 with username: $rdp_user"
+  warn "For stronger security, use this through a VPN or SSH tunnel instead of exposing RDP directly to the Internet."
+}
+
+setup_remote_access_stack(){
+  info "Remote access setup selected."
+
+  if ask_user "Enable SSH server now?"; then
+    enable_ssh_server
+  fi
+
+  if ask_user "Enable GNOME Remote Desktop system-level RDP login?"; then
+    setup_gnome_system_rdp
+  fi
+
+  if ask_user "Enable GNOME Public folder / WebDAV file sharing?"; then
+    setup_gnome_file_sharing_webdav
+  fi
+}
+
+install_proton_vpn_gui(){
+  info "Installing Proton VPN GUI app for Fedora GNOME..."
+  install_if_missing curl wget ca-certificates libappindicator-gtk3 gnome-shell-extension-appindicator gnome-extensions-app
+
+  local fedora_version release_rpm release_url
+  fedora_version="$(rpm -E %fedora)"
+  release_rpm="$(mktemp --suffix=.rpm)"
+  release_url="https://repo.protonvpn.com/fedora-${fedora_version}-stable/protonvpn-stable-release/protonvpn-stable-release-1.0.3-1.noarch.rpm"
+
+  info "Downloading Proton VPN Fedora ${fedora_version} stable repository package..."
+  if ! curl -fL --retry 3 --connect-timeout 30 -o "$release_rpm" "$release_url"; then
+    rm -f "$release_rpm"
+    warn "Could not download Proton VPN repository package for Fedora ${fedora_version}. Check Proton's Fedora support page or network/DNS."
+    return 1
+  fi
+
+  sudo dnf -y install "$release_rpm"
+  rm -f "$release_rpm"
+
+  sudo dnf check-update --refresh || true
+  install_if_missing proton-vpn-gnome-desktop
+
+  if has_gnome_shell; then
+    enable_gnome_extension appindicatorsupport@rgcjonas.gmail.com
+    warn "For the Proton VPN tray icon, reboot or log out/in, then verify AppIndicator and KStatusNotifierItem Support is enabled in Extensions."
+  fi
+
+  info "Proton VPN GUI installed. Open Proton VPN from the app grid and sign in with your Proton account."
 }
 
 install_rocm_stack(){
@@ -697,6 +1013,11 @@ setup_secondary_disk(){
 }
 
 # -------------------- PRIVILEGES ----------------------------
+if [[ $EUID -eq 0 ]]; then
+  error "Do not run this script as root. Run it as your normal user: bash fedora-setup.sh"
+  exit 1
+fi
+
 clear
 info "Fedora 44 / GNOME 50 Interactive Workstation Setup"
 pause
@@ -805,9 +1126,9 @@ fi
 
 getenforce 2>/dev/null | grep -q Enforcing || warn "SELinux is not enforcing."
 
-# -------------------- GNOME SOFTWARE REPO_GPGCHECK BUG FIX --
-if ask_user "Apply GNOME Software repo_gpgcheck=1 workaround for existing third-party repos?"; then
-  apply_repo_gpgcheck_workaround
+# -------------------- REMOTE ACCESS -------------------------
+if ask_user "Configure remote access options (SSH, GNOME RDP, Public folder sharing)?"; then
+  setup_remote_access_stack
 fi
 
 # -------------------- SPEED / PERFORMANCE -------------------
@@ -854,9 +1175,15 @@ fi
 
 # -------------------- BTRFS / SNAPPER -----------------------
 if mount | grep -q ' on / type btrfs'; then
-  if ask_user "Enable Snapper for Btrfs root?"; then
+  if ask_user "Enable Snapper for Btrfs root (1 weekly backup only)?"; then
     install_if_missing snapper
     sudo snapper -c root create-config / || true
+    # Keep the timeline on, but only keep 1 weekly backup
+    sudo sed -i 's/^TIMELINE_LIMIT_HOURLY=.*/TIMELINE_LIMIT_HOURLY="0"/' /etc/snapper/configs/root
+    sudo sed -i 's/^TIMELINE_LIMIT_DAILY=.*/TIMELINE_LIMIT_DAILY="0"/' /etc/snapper/configs/root
+    sudo sed -i 's/^TIMELINE_LIMIT_WEEKLY=.*/TIMELINE_LIMIT_WEEKLY="1"/' /etc/snapper/configs/root
+    sudo sed -i 's/^TIMELINE_LIMIT_MONTHLY=.*/TIMELINE_LIMIT_MONTHLY="0"/' /etc/snapper/configs/root
+    sudo sed -i 's/^TIMELINE_LIMIT_YEARLY=.*/TIMELINE_LIMIT_YEARLY="0"/' /etc/snapper/configs/root
     sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer
   fi
 fi
@@ -871,12 +1198,15 @@ if ask_user "Install Tailscale VPN CLI/daemon?"; then
   install_if_missing curl
   sudo curl -fsSL --retry 3 --connect-timeout 20 -o /etc/yum.repos.d/tailscale.repo \
     https://pkgs.tailscale.com/stable/fedora/tailscale.repo
-  set_repo_gpgcheck_zero tailscale-stable
   install_if_missing tailscale
   ask_user "Enable tailscaled service?" && sudo systemctl enable --now tailscaled
 fi
 
-if ask_user "Install VS Code + VSCodium?"; then
+if ask_user "Install Proton VPN GUI app?"; then
+  install_proton_vpn_gui
+fi
+
+if ask_user "Install Visual Studio Code (Microsoft)?"; then
   install_if_missing curl
   sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc || true
   sudo tee /etc/yum.repos.d/vscode.repo >/dev/null <<'EOF_VSCODE'
@@ -887,18 +1217,21 @@ enabled=1
 gpgcheck=1
 gpgkey=https://packages.microsoft.com/keys/microsoft.asc
 EOF_VSCODE
+  install_if_missing code
+fi
+
+if ask_user "Install VSCodium (Open Source)?"; then
+  install_if_missing curl
   sudo tee /etc/yum.repos.d/vscodium.repo >/dev/null <<'EOF_VSCODIUM'
 [vscodium]
 name=VSCodium
 baseurl=https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/rpms/
 enabled=1
 gpgcheck=1
-repo_gpgcheck=0
 gpgkey=https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg
 metadata_expire=1h
 EOF_VSCODIUM
-  set_repo_gpgcheck_zero vscodium
-  install_if_missing code codium
+  install_if_missing codium
 fi
 
 if ask_user "Install Google Chrome?"; then
@@ -920,6 +1253,10 @@ if ask_user "Install AMD ROCm GPU compute stack?"; then
 fi
 
 if ask_user "Install Docker CE?"; then
+  remove_if_installed \
+    docker docker-client docker-client-latest docker-common docker-latest \
+    docker-latest-logrotate docker-logrotate docker-selinux \
+    docker-engine-selinux docker-engine podman-docker
   add_repo_from_url https://download.docker.com/linux/fedora/docker-ce.repo /etc/yum.repos.d/docker-ce.repo
   if ! sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
     warn "Docker CE install failed. Docker may not have Fedora 44 repo metadata yet."
@@ -930,6 +1267,10 @@ if ask_user "Install Docker CE?"; then
   ask_user "Enable Docker service?" && sudo systemctl enable --now docker
   sudo getent group docker >/dev/null || sudo groupadd docker
   sudo usermod -aG docker "$(real_user)"
+fi
+
+if ask_user "Install Docker Desktop for Linux?"; then
+  install_docker_desktop_stack
 fi
 
 if ask_user "Install virt-manager and KVM/QEMU/libvirt virtualization stack?"; then
@@ -946,13 +1287,84 @@ if ask_user "Install Microsoft Core Fonts via legacy RPM?"; then
   sudo fc-cache -rv
 fi
 
-ask_user "Install LibreOffice (EN + EL)?" && install_if_missing libreoffice libreoffice-langpack-en libreoffice-langpack-el
+ask_user "Install LibreOffice (EN + EL) & Greek spellcheck?" && install_if_missing libreoffice libreoffice-langpack-en libreoffice-langpack-el hunspell-el
 ask_user "Install GIMP & Inkscape?" && install_if_missing gimp inkscape
 
 if ask_user "Install Cockpit?"; then
   install_if_missing cockpit firewalld
   sudo systemctl enable --now cockpit.socket
   sudo firewall-cmd --add-service=cockpit --permanent && sudo firewall-cmd --reload || true
+fi
+
+# -------------------- EXTRA OPTIONAL SOFTWARE ---------------
+
+ensure_flatpak_user_flathub(){
+  install_if_missing flatpak
+  flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+}
+
+if ask_user "Install Pika Backup?"; then
+  ensure_flatpak_user_flathub
+  flatpak install --user -y --noninteractive flathub org.gnome.World.PikaBackup || warn "Flatpak failed: Pika Backup"
+fi
+
+if ask_user "Install disk health and hardware diagnostic tools?"; then
+  install_if_missing smartmontools nvme-cli lm_sensors hdparm pciutils usbutils lshw util-linux
+  sudo systemctl enable --now smartd || warn "Could not enable smartd."
+fi
+
+if ask_user "Install printer and scanner support?"; then
+  install_if_missing cups system-config-printer simple-scan sane-backends sane-airscan ipp-usb avahi firewalld
+  sudo systemctl enable --now cups
+  sudo systemctl enable --now avahi-daemon || warn "Could not enable avahi-daemon."
+  sudo systemctl enable --now firewalld || true
+  sudo firewall-cmd --permanent --add-service=mdns || true
+  sudo firewall-cmd --reload || true
+fi
+
+if ask_user "Install OBS Studio for screen recording/streaming?"; then
+  ensure_flatpak_user_flathub
+  install_if_missing wf-recorder slurp
+  flatpak install --user -y --noninteractive flathub com.obsproject.Studio || warn "Flatpak failed: OBS Studio"
+fi
+
+if ask_user "Install Podman and Distrobox developer container tools?"; then
+  install_if_missing podman podman-compose buildah skopeo distrobox toolbox
+  if ask_user "Enable rootless Podman user socket now?"; then
+    run_user_systemctl enable --now podman.socket || warn "Could not enable rootless Podman socket."
+  fi
+fi
+
+if ask_user "Install shell power-user tools?"; then
+  install_if_missing zsh fish starship tmux btop htop fastfetch neofetch ncdu tree eza fd-find ripgrep bat fzf zoxide direnv
+fi
+
+if ask_user "Install network diagnostic tools?"; then
+  install_if_missing nmap nmap-ncat wireshark-cli wireshark iperf3 bind-utils whois traceroute mtr tcpdump openssl
+  if ask_user "Add $(real_user) to wireshark group if available?"; then
+    sudo getent group wireshark >/dev/null && sudo usermod -aG wireshark "$(real_user)" || warn "wireshark group not found."
+  fi
+fi
+
+if ask_user "Install Python developer tools?"; then
+  install_if_missing python3 python3-pip python3-virtualenv pipx
+  command -v pipx &>/dev/null && run_as_real_user pipx ensurepath || true
+fi
+
+if ask_user "Install Node.js and npm?"; then
+  install_if_missing nodejs npm
+fi
+
+if ask_user "Install Go development tools?"; then
+  install_if_missing golang
+fi
+
+if ask_user "Install Rust development tools?"; then
+  install_if_missing rust cargo
+fi
+
+if ask_user "Install PHP and Composer?"; then
+  install_if_missing php php-cli composer
 fi
 
 # -------------------- GNOME TWEAKS / UI ---------------------
@@ -1031,17 +1443,18 @@ fi
 # -------------------- FLATPAK APPS --------------------------
 if ask_user "Install Flatpak user applications?"; then
   install_if_missing flatpak
-  flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+  flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
   APPS=(
     org.signal.Signal
     com.mattjakeman.ExtensionManager
+    io.missioncenter.MissionCenter
     it.mijorus.gearlever
   )
   # Whaler / Docker GUI apps are intentionally not installed here.
 
   for a in "${APPS[@]}"; do
-    flatpak install -y --noninteractive flathub "$a" || warn "Flatpak failed: $a"
+    flatpak install --user -y --noninteractive flathub "$a" || warn "Flatpak failed: $a"
   done
 fi
 
@@ -1145,6 +1558,11 @@ if ask_user "Setup a second internal disk (Mount/BitLocker)?"; then
   setup_secondary_disk
 fi
 
+# -------------------- FINAL REPOSITORY WORKAROUNDS ----------
+if ask_user "Apply GNOME Software repo_gpgcheck=1 workaround now for all repos added by this script?"; then
+  apply_repo_gpgcheck_workaround
+fi
+
 # -------------------- FINAL ---------------------------------
-info "Setup completed. A reboot is recommended if you changed extensions, groups, kernel args, firmware, Docker, virtualization, or system services."
+info "Setup completed. A reboot is recommended if you changed extensions, groups, kernel args, firmware, Docker, Docker Desktop, Proton VPN, remote access, virtualization, or system services."
 ask_user "Reboot now?" && sudo reboot || info "Reboot skipped."
